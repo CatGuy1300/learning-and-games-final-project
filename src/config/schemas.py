@@ -17,7 +17,7 @@ class GameConfig(BaseModel):
     )
     generator: str = Field(
         default="random",
-        description="Preset game generator ('matching_pennies', 'prisoners_dilemma', 'shapley', 'random')",
+        description="Preset game generator ('matching_pennies', 'prisoners_dilemma', 'shapley', 'random', 'custom')",
     )
     payoffs: Optional[List[Any]] = Field(
         default=None, description="Explicit payoff matrices/tensors for all players"
@@ -30,7 +30,7 @@ class DynamicConfig(BaseModel):
 
     algorithm: str = Field(
         default="omwu",
-        description="Learning dynamic type ('omwu', 'extra_gradient', 'mwu', 'gda')",
+        description="Learning dynamic type ('omwu', 'extra_gradient', 'mwu', 'gda', 'mirror_prox')",
     )
     eta: float = Field(default=0.01, gt=0.0, description="Learning rate step size eta")
     initial_strategy_type: str = Field(

@@ -22,6 +22,7 @@ from src.dynamics.extra_gradient import ExtraGradient
 from src.dynamics.gda import GradientDescentAscent
 from src.dynamics.mwu import MultiplicativeWeightsUpdate
 from src.dynamics.omwu import OptimisticMWU
+from src.dynamics.mirror_prox import MirrorProx
 from src.engine.checkpoint import CheckpointManager
 from src.engine.statistics import StatsCollector
 from src.games.base import BaseGame
@@ -91,6 +92,8 @@ def instantiate_dynamic(
         return MultiplicativeWeightsUpdate(action_sizes=action_sizes, eta=eta, device=device)
     elif algo == "gda":
         return GradientDescentAscent(action_sizes=action_sizes, eta=eta, device=device)
+    elif algo == "mirror_prox":
+        return MirrorProx(action_sizes=action_sizes, eta=eta, device=device)
     else:
         raise ValueError(f"Unsupported learning dynamic algorithm: '{algo}'")
 
