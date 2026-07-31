@@ -1,6 +1,7 @@
 """Extra Gradient (EG) / Optimistic Gradient Descent (OGD) with simplex projection."""
 
-from typing import Any, Dict, List, Optional
+from typing import Any
+
 import torch
 from torch.nn.utils.rnn import pad_sequence
 
@@ -9,12 +10,12 @@ from src.dynamics.base import BaseLearningDynamic
 
 def project_onto_simplex_batch(
     V: torch.Tensor,
-    mask: Optional[torch.Tensor] = None,
-    ind: Optional[torch.Tensor] = None,
-    out: Optional[torch.Tensor] = None,
+    mask: torch.Tensor | None = None,
+    ind: torch.Tensor | None = None,
+    out: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Vectorized Euclidean projection of 2D matrix V (shape: num_players x max_action_size) onto the probability simplex."""
-    N, d = V.shape
+    d = V.shape[-1]
     # We cannot do `mask.all()` here because it causes a blocking GPU-to-CPU synchronization!
     # Instead, we just check if d == 2, and we can compute the closed form natively.
     # If a mask exists, we can apply it after the closed-form math safely, because d=2 simplex projection
@@ -26,10 +27,10 @@ def project_onto_simplex_batch(
             torch.clamp(V - theta, min=0.0, out=out)
         else:
             out = torch.clamp(V - theta, min=0.0)
-            
+
         if mask is not None:
             out.masked_fill_(~mask, 0.0)
-            
+
         sums = out.sum(dim=-1, keepdim=True)
         sums.masked_fill_(sums == 0, 1.0)
         out.div_(sums)
@@ -64,10 +65,10 @@ def project_onto_simplex_batch(
         torch.clamp(V - theta, min=0.0, out=out)
     else:
         out = torch.clamp(V - theta, min=0.0)
-        
+
     if mask is not None:
         out.masked_fill_(~mask, 0.0)
-        
+
     sums = out.sum(dim=-1, keepdim=True)
     sums.masked_fill_(sums == 0, 1.0)
     out.div_(sums)
@@ -85,31 +86,32 @@ class ExtraGradient(BaseLearningDynamic):
 
     def __init__(
         self,
-        action_sizes: List[int],
+        action_sizes: list[int],
         eta: float = 0.01,
         device: torch.device = torch.device("cpu"),
+        batch_size: int = 1,
     ) -> None:
         """Initialize ExtraGradient dynamic."""
-        super().__init__(action_sizes=action_sizes, eta=eta, device=device)
-        self.stacked_prev_utilities = torch.zeros(
-            (self.num_players, self.max_action_size), device=self.device, dtype=torch.float32
-        )
+        super().__init__(action_sizes=action_sizes, eta=eta, device=device, batch_size=batch_size)
+        self.stacked_prev_utilities = torch.zeros_like(self.stacked_strategies)
         self.has_prev = False
         self.reset()
 
-    def reset(self, initial_strategies: Optional[List[torch.Tensor]] = None) -> None:
+    def reset(self, initial_strategies: list[torch.Tensor] | None = None) -> None:
         """Reset strategies and clear past utility history."""
-        self.stacked_strategies.zero_()
-        for i, a_size in enumerate(self.action_sizes):
-            if initial_strategies is not None:
-                s = initial_strategies[i].clone().to(device=self.device, dtype=torch.float32)
-            else:
-                s = torch.full((a_size,), 1.0 / a_size, device=self.device, dtype=torch.float32)
-            self.stacked_strategies[i, :a_size] = s
+        if initial_strategies is not None:
+            self.strategies = [
+                s.clone().to(device=self.device, dtype=torch.float32) for s in initial_strategies
+            ]
+        else:
+            self.strategies = [
+                torch.full((a,), 1.0 / a, device=self.device, dtype=torch.float32)
+                for a in self.action_sizes
+            ]
         self.stacked_prev_utilities.zero_()
         self.has_prev = False
 
-    def step(self, utility_vectors: List[torch.Tensor]) -> List[torch.Tensor]:
+    def step(self, utility_vectors: list[torch.Tensor]) -> list[torch.Tensor]:
         """Update strategies using 2D batched Extra Gradient (OGD) rule across all N players simultaneously."""
         # 1. Zero-loop C++ batched 2D tensor conversion (shape: num_players x max_action_size)
         u_tensors = [u.to(device=self.device, dtype=torch.float32) for u in utility_vectors]
@@ -126,10 +128,14 @@ class ExtraGradient(BaseLearningDynamic):
         stacked_u_prev = self.stacked_prev_utilities
 
         # 2. Fully vectorized optimistic gradient step across ALL players simultaneously
-        raw_next = self.stacked_strategies + 2.0 * self.eta * stacked_u_curr - self.eta * stacked_u_prev
+        raw_next = (
+            self.stacked_strategies + 2.0 * self.eta * stacked_u_curr - self.eta * stacked_u_prev
+        )
 
         # 3. Batched 2D Euclidean simplex projection across all N players simultaneously
-        project_onto_simplex_batch(raw_next, mask=self.mask, ind=self.ind, out=self.stacked_strategies)
+        project_onto_simplex_batch(
+            raw_next, mask=self.mask, ind=self.ind, out=self.stacked_strategies
+        )
 
         self.stacked_prev_utilities.copy_(stacked_u_curr)
         return self.strategies
@@ -142,13 +148,17 @@ class ExtraGradient(BaseLearningDynamic):
 
         stacked_u_prev = self.stacked_prev_utilities
 
-        raw_next = self.stacked_strategies + 2.0 * self.eta * stacked_u_curr - self.eta * stacked_u_prev
-        project_onto_simplex_batch(raw_next, mask=self.mask, ind=self.ind, out=self.stacked_strategies)
+        raw_next = (
+            self.stacked_strategies + 2.0 * self.eta * stacked_u_curr - self.eta * stacked_u_prev
+        )
+        project_onto_simplex_batch(
+            raw_next, mask=self.mask, ind=self.ind, out=self.stacked_strategies
+        )
 
         self.stacked_prev_utilities.copy_(stacked_u_curr)
         return self.stacked_strategies
 
-    def get_state(self) -> Dict[str, Any]:
+    def get_state(self) -> dict[str, Any]:
         """Serialize state dictionary."""
         return {
             "strategies": [s.cpu() for s in self.strategies],
@@ -163,16 +173,16 @@ class ExtraGradient(BaseLearningDynamic):
             "eta": self.eta,
         }
 
-    def load_state(self, state_dict: Dict[str, Any]) -> None:
+    def load_state(self, state_dict: dict[str, Any]) -> None:
         """Load state dictionary."""
         self.strategies = [s.to(device=self.device) for s in state_dict["strategies"]]
         if state_dict["prev_utilities"] is not None:
             self.has_prev = True
-            self.stacked_prev_utilities = torch.zeros(
-                (self.num_players, self.max_action_size), device=self.device, dtype=torch.float32
-            )
+            self.stacked_prev_utilities = torch.zeros_like(self.stacked_strategies)
             for i, u in enumerate(state_dict["prev_utilities"]):
-                self.stacked_prev_utilities[i, : self.action_sizes[i]] = u.to(device=self.device)
+                self.stacked_prev_utilities[
+                    0 if self.batch_size == 1 else slice(None), i, : self.action_sizes[i]
+                ] = u.to(device=self.device)
         else:
             self.stacked_prev_utilities.zero_()
             self.has_prev = False

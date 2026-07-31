@@ -1,7 +1,7 @@
 """Abstract base class for finite general-sum games."""
 
 from abc import ABC, abstractmethod
-from typing import List, Tuple
+
 import torch
 
 
@@ -11,8 +11,8 @@ class BaseGame(ABC):
     def __init__(
         self,
         num_players: int,
-        action_sizes: List[int],
-        utility_range: Tuple[float, float] = (-1.0, 1.0),
+        action_sizes: list[int],
+        utility_range: tuple[float, float] = (-1.0, 1.0),
         device: torch.device = torch.device("cpu"),
     ) -> None:
         """Initialize base game properties."""
@@ -22,14 +22,12 @@ class BaseGame(ABC):
         self.device = device
 
     @abstractmethod
-    def get_payoff_tensors(self) -> List[torch.Tensor]:
+    def get_payoff_tensors(self) -> list[torch.Tensor]:
         """Return list of payoff tensors [U^(1), ..., U^(N)] per player."""
-        pass
 
     @abstractmethod
-    def get_utility_vectors(self, strategies: List[torch.Tensor]) -> List[torch.Tensor]:
+    def get_utility_vectors(self, strategies: list[torch.Tensor]) -> list[torch.Tensor]:
         """Compute expected utility vector u_i(x^{-i}) for each player i given strategies x."""
-        pass
 
     def get_stacked_utility_vectors(self, stacked_strategies: torch.Tensor) -> torch.Tensor:
         """Compute 2D utility tensor (N, max_action_size) directly from 2D strategy tensor (N, max_action_size).
@@ -49,16 +47,13 @@ class BaseGame(ABC):
         return torch.nn.utils.rnn.pad_sequence(u_vecs, batch_first=True, padding_value=0.0)
 
     @abstractmethod
-    def get_expected_payoffs(self, strategies: List[torch.Tensor]) -> List[float]:
+    def get_expected_payoffs(self, strategies: list[torch.Tensor]) -> list[float]:
         """Compute scalar expected payoff E_{a ~ x}[U^{(i)}(a)] for each player i."""
-        pass
 
     @abstractmethod
-    def best_response_payoffs(self, strategies: List[torch.Tensor]) -> List[float]:
+    def best_response_payoffs(self, strategies: list[torch.Tensor]) -> list[float]:
         """Compute max_a_i u_i(a_i, x^{-i}) best response payoff for each player i."""
-        pass
 
     @abstractmethod
     def to(self, device: torch.device) -> "BaseGame":
         """Move game payoff tensors to target device."""
-        pass

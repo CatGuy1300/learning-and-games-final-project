@@ -1,9 +1,9 @@
 """Typer CLI interface for running and managing learning in games experiments."""
 
 import os
-from typing import Optional
-import yaml
+
 import typer
+import yaml
 from rich.console import Console
 from rich.table import Table
 
@@ -31,25 +31,25 @@ def load_yaml_config(config_path: str) -> ExperimentConfig:
 
 @app.command()
 def run(
-    config: Optional[str] = typer.Option(
+    config: str | None = typer.Option(
         None, "--config", "-c", help="Path to YAML configuration file"
     ),
-    resume: Optional[str] = typer.Option(
+    resume: str | None = typer.Option(
         None, "--resume", "-r", help="Path to .pt checkpoint file to resume simulation from"
     ),
-    steps: Optional[int] = typer.Option(
+    steps: int | None = typer.Option(
         None, "--steps", "-s", help="Override total simulation horizon steps T"
     ),
-    device: Optional[str] = typer.Option(
+    device: str | None = typer.Option(
         None, "--device", "-d", help="Override execution device ('cuda', 'cpu', 'auto')"
     ),
-    compile: Optional[bool] = typer.Option(
+    compile: bool | None = typer.Option(
         None, "--compile", help="Enable PyTorch JIT graph compilation via torch.compile()"
     ),
-    sample_interval: Optional[int] = typer.Option(
+    sample_interval: int | None = typer.Option(
         None, "--sample-interval", help="Sampling step interval for statistics recording"
     ),
-    steps_per_call: Optional[int] = typer.Option(
+    steps_per_call: int | None = typer.Option(
         None, "--steps-per-call", help="Number of unrolled dynamic steps per loop invocation"
     ),
 ) -> None:
@@ -98,7 +98,7 @@ def run(
 
 @app.command()
 def validate_config(
-    config: str = typer.Option(..., "--config", "-c", help="Path to YAML configuration file")
+    config: str = typer.Option(..., "--config", "-c", help="Path to YAML configuration file"),
 ) -> None:
     """Validate YAML configuration file structure, shapes, and utility bounds."""
     try:
@@ -124,7 +124,7 @@ def info() -> None:
 
 @app.command()
 def show_game(
-    config: str = typer.Option(..., "--config", "-c", help="Path to YAML configuration file")
+    config: str = typer.Option(..., "--config", "-c", help="Path to YAML configuration file"),
 ) -> None:
     """Display generated game payoff matrices/tensors."""
     from src.engine.runner import instantiate_game
@@ -141,7 +141,9 @@ def show_game(
 
     payoffs = game.get_payoff_tensors()
     for i, p_tensor in enumerate(payoffs):
-        console.print(f"\n[bold yellow]Player {i} Payoff Matrix/Tensor (shape {tuple(p_tensor.shape)}):[/bold yellow]")
+        console.print(
+            f"\n[bold yellow]Player {i} Payoff Matrix/Tensor (shape {tuple(p_tensor.shape)}):[/bold yellow]"
+        )
         console.print(p_tensor.cpu().numpy())
 
 

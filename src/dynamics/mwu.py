@@ -1,6 +1,7 @@
 """Multiplicative Weights Update (MWU / Hedge) learning dynamic baseline."""
 
-from typing import Any, Dict, List, Optional
+from typing import Any
+
 import torch
 from torch.nn.utils.rnn import pad_sequence
 
@@ -12,32 +13,33 @@ class MultiplicativeWeightsUpdate(BaseLearningDynamic):
 
     def __init__(
         self,
-        action_sizes: List[int],
+        action_sizes: list[int],
         eta: float = 0.01,
         device: torch.device = torch.device("cpu"),
+        batch_size: int = 1,
     ) -> None:
         """Initialize MWU dynamic."""
-        super().__init__(action_sizes=action_sizes, eta=eta, device=device)
-        self.log_strategies = torch.zeros(
-            (self.num_players, self.max_action_size), device=self.device, dtype=torch.float32
-        )
+        super().__init__(action_sizes=action_sizes, eta=eta, device=device, batch_size=batch_size)
+        self.log_strategies = torch.zeros_like(self.stacked_strategies)
         self.reset()
 
-    def reset(self, initial_strategies: Optional[List[torch.Tensor]] = None) -> None:
+    def reset(self, initial_strategies: list[torch.Tensor] | None = None) -> None:
         """Reset strategy distributions."""
-        self.stacked_strategies.zero_()
-        for i, a_size in enumerate(self.action_sizes):
-            if initial_strategies is not None:
-                s = initial_strategies[i].clone().to(device=self.device, dtype=torch.float32)
-            else:
-                s = torch.full((a_size,), 1.0 / a_size, device=self.device, dtype=torch.float32)
-            self.stacked_strategies[i, :a_size] = s
+        if initial_strategies is not None:
+            self.strategies = [
+                s.clone().to(device=self.device, dtype=torch.float32) for s in initial_strategies
+            ]
+        else:
+            self.strategies = [
+                torch.full((a,), 1.0 / a, device=self.device, dtype=torch.float32)
+                for a in self.action_sizes
+            ]
 
         eps = 1e-30
         self.log_strategies.copy_(torch.log(torch.clamp(self.stacked_strategies, min=eps)))
         self.log_strategies.masked_fill_(~self.mask, -float("inf"))
 
-    def step(self, utility_vectors: List[torch.Tensor]) -> List[torch.Tensor]:
+    def step(self, utility_vectors: list[torch.Tensor]) -> list[torch.Tensor]:
         """Update strategies using 2D vectorized MWU step across all N players simultaneously."""
         u_tensors = [u.to(device=self.device, dtype=torch.float32) for u in utility_vectors]
         stacked_u_curr = pad_sequence(u_tensors, batch_first=True, padding_value=0.0)
@@ -55,26 +57,26 @@ class MultiplicativeWeightsUpdate(BaseLearningDynamic):
         self.log_strategies.add_(stacked_u_curr, alpha=self.eta)
 
         # 2. Max-Centering in-place
-        max_val = self.log_strategies.max(dim=1, keepdim=True).values
+        max_val = self.log_strategies.max(dim=-1, keepdim=True).values
         self.log_strategies.sub_(max_val)
         self.log_strategies.masked_fill_(~self.mask, -float("inf"))
 
         # 3. Softmax exponentiation in-place
         torch.exp(self.log_strategies, out=self.stacked_strategies)
         self.stacked_strategies.masked_fill_(~self.mask, 0.0)
-        
+
         # 4. Normalize in-place
-        self.stacked_strategies.div_(self.stacked_strategies.sum(dim=1, keepdim=True))
+        self.stacked_strategies.div_(self.stacked_strategies.sum(dim=-1, keepdim=True))
         return self.stacked_strategies
 
-    def get_state(self) -> Dict[str, Any]:
+    def get_state(self) -> dict[str, Any]:
         """Serialize state dictionary."""
         return {
             "strategies": [s.cpu() for s in self.strategies],
             "eta": self.eta,
         }
 
-    def load_state(self, state_dict: Dict[str, Any]) -> None:
+    def load_state(self, state_dict: dict[str, Any]) -> None:
         """Load state dictionary."""
         self.strategies = [s.to(device=self.device) for s in state_dict["strategies"]]
         eps = 1e-30

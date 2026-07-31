@@ -128,4 +128,4 @@ def test_dual_interface_exactness():
         res2_2d = dyn2.step_2d(u_2d)
 
         for i in range(len(actions)):
-            assert torch.allclose(res1[i], res2_2d[i, : actions[i]], atol=1e-7)
+            assert torch.allclose(res1[i], res2_2d[0, i, : actions[i]], atol=1e-7)

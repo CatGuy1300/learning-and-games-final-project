@@ -1,7 +1,8 @@
 """Abstract base class for learning dynamics algorithms."""
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any
+
 import torch
 
 
@@ -10,9 +11,10 @@ class BaseLearningDynamic(ABC):
 
     def __init__(
         self,
-        action_sizes: List[int],
+        action_sizes: list[int],
         eta: float = 0.01,
         device: torch.device = torch.device("cpu"),
+        batch_size: int = 1,
     ) -> None:
         """Initialize learning dynamic.
 
@@ -24,71 +26,78 @@ class BaseLearningDynamic(ABC):
             Learning rate step size.
         device : torch.device
             PyTorch device allocation.
+        batch_size : int
+            Number of independent games to simulate simultaneously.
         """
         self.num_players = len(action_sizes)
         self.action_sizes = action_sizes
         self.max_action_size = max(action_sizes)
         self.eta = eta
         self.device = device
+        self.batch_size = batch_size
 
-        # Create boolean mask tensor of shape (num_players, max_action_size) for padded actions
+        # Create boolean mask tensor of shape (1, num_players, max_action_size) for padded actions
         self.mask = torch.zeros(
-            (self.num_players, self.max_action_size), device=self.device, dtype=torch.bool
+            (1, self.num_players, self.max_action_size), device=self.device, dtype=torch.bool
         )
         for i, a_size in enumerate(action_sizes):
-            self.mask[i, :a_size] = True
+            self.mask[0, i, :a_size] = True
 
-        # Batched 2D strategy tensor of shape (num_players, max_action_size)
+        # Batched 3D strategy tensor of shape (batch_size, num_players, max_action_size)
         self.stacked_strategies = torch.zeros(
-            (self.num_players, self.max_action_size), device=self.device, dtype=torch.float32
+            (self.batch_size, self.num_players, self.max_action_size),
+            device=self.device,
+            dtype=torch.float32,
         )
 
-        # Pre-cached index tensor (1, max_action_size) for zero-allocation simplex projections
+        # Pre-cached index tensor (1, 1, max_action_size) for zero-allocation simplex projections
         self.ind = torch.arange(
             1, self.max_action_size + 1, device=self.device, dtype=torch.float32
-        ).unsqueeze(0)
+        ).view(1, 1, self.max_action_size)
 
     @property
-    def strategies(self) -> List[torch.Tensor]:
-        """Return strategies as a list of 1D probability tensors [x^1, ..., x^N]."""
+    def strategies(self) -> list[torch.Tensor]:
+        """Return strategies as a list of 1D/2D probability tensors [x^1, ..., x^N]."""
+        if self.batch_size == 1:
+            return [
+                self.stacked_strategies[0, i, : self.action_sizes[i]]
+                for i in range(self.num_players)
+            ]
         return [
-            self.stacked_strategies[i, : self.action_sizes[i]]
-            for i in range(self.num_players)
+            self.stacked_strategies[:, i, : self.action_sizes[i]] for i in range(self.num_players)
         ]
 
     @strategies.setter
-    def strategies(self, strats: List[torch.Tensor]) -> None:
-        """Set strategies from a list of 1D probability tensors."""
+    def strategies(self, strats: list[torch.Tensor]) -> None:
+        """Set strategies from a list of probability tensors."""
         self.stacked_strategies.zero_()
         for i, s in enumerate(strats):
-            self.stacked_strategies[i, : self.action_sizes[i]] = s.to(device=self.device)
+            if self.batch_size == 1:
+                self.stacked_strategies[0, i, : self.action_sizes[i]] = s.to(device=self.device)
+            else:
+                self.stacked_strategies[:, i, : self.action_sizes[i]] = s.to(device=self.device)
 
     @abstractmethod
-    def reset(self, initial_strategies: Optional[List[torch.Tensor]] = None) -> None:
+    def reset(self, initial_strategies: list[torch.Tensor] | None = None) -> None:
         """Reset player strategy vectors and internal algorithm state."""
-        pass
 
     @abstractmethod
-    def step(self, utility_vectors: List[torch.Tensor]) -> List[torch.Tensor]:
+    def step(self, utility_vectors: list[torch.Tensor]) -> list[torch.Tensor]:
         """Perform one step update of learning dynamics given current utility vectors u_i(x^{-i})."""
-        pass
 
     @abstractmethod
-    def get_state(self) -> Dict[str, Any]:
+    def get_state(self) -> dict[str, Any]:
         """Serialize internal state dictionary for checkpoint saving."""
-        pass
 
     @abstractmethod
-    def load_state(self, state_dict: Dict[str, Any]) -> None:
+    def load_state(self, state_dict: dict[str, Any]) -> None:
         """Load state dictionary from saved checkpoint."""
-        pass
 
     @abstractmethod
     def step_2d(self, stacked_u_curr: torch.Tensor) -> torch.Tensor:
         """Perform 2D in-place vectorized step directly on 2D utility tensor."""
-        pass
 
-    def step_multi(self, game: Any, num_steps: int = 1) -> List[torch.Tensor]:
+    def step_multi(self, game: Any, num_steps: int = 1) -> list[torch.Tensor]:
         """Perform num_steps unrolled updates in PyTorch GPU execution loop.
 
         Parameters
@@ -127,8 +136,8 @@ class BaseLearningDynamic(ABC):
         for _ in range(k_steps):
             if hasattr(torch, "compiler") and hasattr(torch.compiler, "cudagraph_mark_step_begin"):
                 torch.compiler.cudagraph_mark_step_begin()
-                
+
             stacked_u = game.get_stacked_utility_vectors(self.stacked_strategies)
             cum_u_2d += stacked_u
-            cum_p_1d += (stacked_u * self.stacked_strategies).sum(dim=1)
+            cum_p_1d += (stacked_u * self.stacked_strategies).sum(dim=-1)
             self.step_2d(stacked_u)

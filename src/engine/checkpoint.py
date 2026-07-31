@@ -3,7 +3,8 @@
 import glob
 import os
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any
+
 import torch
 
 from src.utils.logging import setup_logger
@@ -18,7 +19,7 @@ class CheckpointManager:
         self,
         checkpoint_dir: str = "checkpoints",
         keep_top_k: int = 5,
-        session_id: Optional[str] = None,
+        session_id: str | None = None,
     ) -> None:
         """Initialize CheckpointManager.
 
@@ -39,11 +40,11 @@ class CheckpointManager:
     def save(
         self,
         step: int,
-        config_dict: Dict[str, Any],
-        dynamic_state: Dict[str, Any],
-        rng_state: Dict[str, Any],
-        cumulative_utility_vectors: List[torch.Tensor],
-        cumulative_actual_payoffs: List[float],
+        config_dict: dict[str, Any],
+        dynamic_state: dict[str, Any],
+        rng_state: dict[str, Any],
+        cumulative_utility_vectors: list[torch.Tensor],
+        cumulative_actual_payoffs: list[float],
     ) -> str:
         """Save experiment checkpoint dictionary atomically to disk.
 
@@ -80,7 +81,7 @@ class CheckpointManager:
         self._cleanup_old_checkpoints()
         return filepath
 
-    def load(self, filepath: str) -> Dict[str, Any]:
+    def load(self, filepath: str) -> dict[str, Any]:
         """Load checkpoint dictionary from file.
 
         Parameters

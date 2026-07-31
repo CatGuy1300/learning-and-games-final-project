@@ -1,6 +1,5 @@
 """Preset game generators and random matrix/tensor game initializers."""
 
-from typing import List, Optional, Tuple
 import torch
 
 from src.games.matrix_game import MatrixGame
@@ -8,7 +7,7 @@ from src.games.nplayer_game import NPlayerGame
 
 
 def scale_tensor_to_range(
-    tensor: torch.Tensor, utility_range: Tuple[float, float] = (-1.0, 1.0)
+    tensor: torch.Tensor, utility_range: tuple[float, float] = (-1.0, 1.0)
 ) -> torch.Tensor:
     """Linearly scale tensor values to lie inside [u_min, u_max].
 
@@ -37,7 +36,7 @@ def scale_tensor_to_range(
 
 
 def create_matching_pennies(
-    utility_range: Tuple[float, float] = (-1.0, 1.0), device: torch.device = torch.device("cpu")
+    utility_range: tuple[float, float] = (-1.0, 1.0), device: torch.device = torch.device("cpu")
 ) -> MatrixGame:
     """Create zero-sum Matching Pennies matrix game.
 
@@ -53,7 +52,7 @@ def create_matching_pennies(
 
 
 def create_prisoners_dilemma(
-    utility_range: Tuple[float, float] = (-1.0, 1.0), device: torch.device = torch.device("cpu")
+    utility_range: tuple[float, float] = (-1.0, 1.0), device: torch.device = torch.device("cpu")
 ) -> MatrixGame:
     """Create classic Prisoner's Dilemma matrix game.
 
@@ -70,7 +69,7 @@ def create_prisoners_dilemma(
 
 
 def create_rock_paper_scissors(
-    utility_range: Tuple[float, float] = (-1.0, 1.0), device: torch.device = torch.device("cpu")
+    utility_range: tuple[float, float] = (-1.0, 1.0), device: torch.device = torch.device("cpu")
 ) -> MatrixGame:
     """Create zero-sum Rock-Paper-Scissors matrix game."""
     raw_a = torch.tensor(
@@ -84,15 +83,11 @@ def create_rock_paper_scissors(
 
 
 def create_shapley_game(
-    utility_range: Tuple[float, float] = (-1.0, 1.0), device: torch.device = torch.device("cpu")
+    utility_range: tuple[float, float] = (-1.0, 1.0), device: torch.device = torch.device("cpu")
 ) -> MatrixGame:
     """Create Shapley non-zero sum game with cyclic best-response trajectory."""
-    raw_a = torch.tensor(
-        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=torch.float32
-    )
-    raw_b = torch.tensor(
-        [[0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]], dtype=torch.float32
-    )
+    raw_a = torch.tensor([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=torch.float32)
+    raw_b = torch.tensor([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]], dtype=torch.float32)
 
     payoff_a = scale_tensor_to_range(raw_a, utility_range)
     payoff_b = scale_tensor_to_range(raw_b, utility_range)
@@ -101,9 +96,9 @@ def create_shapley_game(
 
 def create_random_game(
     num_players: int = 2,
-    action_sizes: Optional[List[int]] = None,
-    utility_range: Tuple[float, float] = (-1.0, 1.0),
-    seed: Optional[int] = None,
+    action_sizes: list[int] | None = None,
+    utility_range: tuple[float, float] = (-1.0, 1.0),
+    seed: int | None = None,
     device: torch.device = torch.device("cpu"),
 ) -> NPlayerGame:
     """Generate random N-player general-sum game with payoffs scaled to utility_range.
@@ -138,7 +133,7 @@ def create_random_game(
     shape = tuple(action_sizes)
     u_min, u_max = utility_range
 
-    payoffs: List[torch.Tensor] = []
+    payoffs: list[torch.Tensor] = []
     for _ in range(num_players):
         raw = torch.rand(shape, generator=gen, dtype=torch.float32)
         scaled = u_min + raw * (u_max - u_min)

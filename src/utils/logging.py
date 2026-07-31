@@ -1,7 +1,7 @@
 """Logging initialization and rich console formatting."""
 
 import logging
-from typing import Optional
+
 from rich.console import Console
 from rich.logging import RichHandler
 
@@ -11,7 +11,7 @@ console = Console()
 def setup_logger(
     name: str = "learning_games",
     log_level: str = "INFO",
-    log_file: Optional[str] = None,
+    log_file: str | None = None,
 ) -> logging.Logger:
     """Set up structured logger with Rich handler and optional file output.
 
@@ -51,9 +51,7 @@ def setup_logger(
     if log_file:
         file_handler = logging.FileHandler(log_file, encoding="utf-8")
         file_handler.setLevel(numeric_level)
-        file_formatter = logging.Formatter(
-            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-        )
+        file_formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
         file_handler.setFormatter(file_formatter)
         logger.addHandler(file_handler)
 

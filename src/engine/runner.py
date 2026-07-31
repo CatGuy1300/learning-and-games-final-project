@@ -2,17 +2,18 @@
 
 import random
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any
+
 import numpy as np
 import torch
 from rich.progress import (
-    Progress,
-    TextColumn,
     BarColumn,
+    MofNCompleteColumn,
+    Progress,
     TaskProgressColumn,
+    TextColumn,
     TimeElapsedColumn,
     TimeRemainingColumn,
-    MofNCompleteColumn,
 )
 
 from src.config.schemas import ExperimentConfig
@@ -20,9 +21,9 @@ from src.config.validation import validate_experiment_config
 from src.dynamics.base import BaseLearningDynamic
 from src.dynamics.extra_gradient import ExtraGradient
 from src.dynamics.gda import GradientDescentAscent
+from src.dynamics.mirror_prox import MirrorProx
 from src.dynamics.mwu import MultiplicativeWeightsUpdate
 from src.dynamics.omwu import OptimisticMWU
-from src.dynamics.mirror_prox import MirrorProx
 from src.engine.checkpoint import CheckpointManager
 from src.engine.statistics import StatsCollector
 from src.games.base import BaseGame
@@ -41,7 +42,7 @@ from src.metrics.regret import (
     compute_step_metrics,
 )
 from src.utils.device import enable_gpu_optimizations, get_device
-from src.utils.logging import setup_logger, console
+from src.utils.logging import console, setup_logger
 from src.utils.reproducibility import set_seed
 
 logger = setup_logger("runner")
@@ -69,7 +70,12 @@ def instantiate_game(config: ExperimentConfig, device: torch.device) -> BaseGame
             device=device,
         )
     elif config.game.payoffs is not None:
-        payoffs = [torch.tensor(p, dtype=torch.float32) for p in config.game.payoffs]
+        payoffs = [
+            p.clone().detach().to(dtype=torch.float32)
+            if isinstance(p, torch.Tensor)
+            else torch.tensor(p, dtype=torch.float32)
+            for p in config.game.payoffs
+        ]
         if config.game.num_players == 2 and len(payoffs) == 2 and payoffs[0].dim() == 2:
             return MatrixGame(payoffs[0], payoffs[1], utility_range=u_range, device=device)
         return NPlayerGame(payoffs, utility_range=u_range, device=device)
@@ -78,22 +84,31 @@ def instantiate_game(config: ExperimentConfig, device: torch.device) -> BaseGame
 
 
 def instantiate_dynamic(
-    config: ExperimentConfig, action_sizes: List[int], device: torch.device
+    config: ExperimentConfig, action_sizes: list[int], device: torch.device
 ) -> BaseLearningDynamic:
     """Instantiate learning dynamic algorithm from config."""
     algo = config.dynamic.algorithm.lower()
     eta = config.dynamic.eta
+    batch_size = config.execution.batch_size
 
     if algo == "omwu":
-        return OptimisticMWU(action_sizes=action_sizes, eta=eta, device=device)
+        return OptimisticMWU(
+            action_sizes=action_sizes, eta=eta, device=device, batch_size=batch_size
+        )
     elif algo == "extra_gradient":
-        return ExtraGradient(action_sizes=action_sizes, eta=eta, device=device)
+        return ExtraGradient(
+            action_sizes=action_sizes, eta=eta, device=device, batch_size=batch_size
+        )
     elif algo == "mwu":
-        return MultiplicativeWeightsUpdate(action_sizes=action_sizes, eta=eta, device=device)
+        return MultiplicativeWeightsUpdate(
+            action_sizes=action_sizes, eta=eta, device=device, batch_size=batch_size
+        )
     elif algo == "gda":
-        return GradientDescentAscent(action_sizes=action_sizes, eta=eta, device=device)
+        return GradientDescentAscent(
+            action_sizes=action_sizes, eta=eta, device=device, batch_size=batch_size
+        )
     elif algo == "mirror_prox":
-        return MirrorProx(action_sizes=action_sizes, eta=eta, device=device)
+        return MirrorProx(action_sizes=action_sizes, eta=eta, device=device, batch_size=batch_size)
     else:
         raise ValueError(f"Unsupported learning dynamic algorithm: '{algo}'")
 
@@ -104,7 +119,7 @@ class ExperimentRunner:
     def __init__(
         self,
         config: ExperimentConfig,
-        resume_checkpoint_path: Optional[str] = None,
+        resume_checkpoint_path: str | None = None,
     ) -> None:
         """Initialize runner.
 
@@ -130,15 +145,26 @@ class ExperimentRunner:
         if config.execution.compile:
             try:
                 import sys
+
                 if hasattr(torch, "_dynamo"):
                     torch._dynamo.config.suppress_errors = True
-                backend = "cudagraphs" if (sys.platform == "win32" and self.device.type == "cuda") else "inductor"
-                logger.info(f"Enabling PyTorch JIT compilation via torch.compile(backend='{backend}')...")
+                backend = (
+                    "cudagraphs"
+                    if (sys.platform == "win32" and self.device.type == "cuda")
+                    else "inductor"
+                )
+                logger.info(
+                    f"Enabling PyTorch JIT compilation via torch.compile(backend='{backend}')..."
+                )
                 self.dynamic.step_2d = torch.compile(self.dynamic.step_2d, backend=backend)
                 # Ensure torch.no_grad() is used or mark step begins to satisfy cudagraphs fast path
-                self.game.get_stacked_utility_vectors = torch.compile(self.game.get_stacked_utility_vectors, backend=backend)
+                self.game.get_stacked_utility_vectors = torch.compile(
+                    self.game.get_stacked_utility_vectors, backend=backend
+                )
             except Exception as e:
-                logger.warning(f"torch.compile failed to initialize (falling back to eager mode): {e}")
+                logger.warning(
+                    f"torch.compile failed to initialize (falling back to eager mode): {e}"
+                )
 
         # Parse initial strategies based on config
         initial_strats = None
@@ -171,20 +197,29 @@ class ExperimentRunner:
         self.start_step = 0
         self.max_action_size = max(self.game.action_sizes)
         self.stacked_cumulative_utility_vectors = torch.zeros(
-            (self.game.num_players, self.max_action_size), device=self.device, dtype=torch.float32
+            (self.config.execution.batch_size, self.game.num_players, self.max_action_size),
+            device=self.device,
+            dtype=torch.float32,
         )
         self.cumulative_actual_payoffs = torch.zeros(
-            self.game.num_players, device=self.device, dtype=torch.float32
+            (self.config.execution.batch_size, self.game.num_players),
+            device=self.device,
+            dtype=torch.float32,
         )
 
         if resume_checkpoint_path:
             self._resume_from_checkpoint(resume_checkpoint_path)
 
     @property
-    def cumulative_utility_vectors(self) -> List[torch.Tensor]:
-        """Return cumulative utility vectors as a list of 1D tensors [U^1, ..., U^N]."""
+    def cumulative_utility_vectors(self) -> list[torch.Tensor]:
+        """Return cumulative utility vectors as a list of 1D/2D tensors [U^1, ..., U^N]."""
+        if self.config.execution.batch_size == 1:
+            return [
+                self.stacked_cumulative_utility_vectors[0, i, : self.game.action_sizes[i]]
+                for i in range(self.game.num_players)
+            ]
         return [
-            self.stacked_cumulative_utility_vectors[i, : self.game.action_sizes[i]]
+            self.stacked_cumulative_utility_vectors[:, i, : self.game.action_sizes[i]]
             for i in range(self.game.num_players)
         ]
 
@@ -197,11 +232,34 @@ class ExperimentRunner:
 
         self.stacked_cumulative_utility_vectors.zero_()
         for i, u in enumerate(data["cumulative_utility_vectors"]):
-            self.stacked_cumulative_utility_vectors[i, : self.game.action_sizes[i]] = u.to(self.device)
+            u_t = u.to(self.device)
+            if u_t.dim() == 1:
+                if self.config.execution.batch_size == 1:
+                    self.stacked_cumulative_utility_vectors[0, i, : self.game.action_sizes[i]] = u_t
+                else:
+                    self.stacked_cumulative_utility_vectors[:, i, : self.game.action_sizes[i]] = (
+                        u_t.unsqueeze(0).expand(self.config.execution.batch_size, -1)
+                    )
+            else:
+                self.stacked_cumulative_utility_vectors[:, i, : self.game.action_sizes[i]] = u_t
 
-        self.cumulative_actual_payoffs = torch.tensor(
-            data["cumulative_actual_payoffs"], device=self.device, dtype=torch.float32
-        )
+        self.cumulative_actual_payoffs.zero_()
+        if "cumulative_actual_payoffs" in data:
+            if isinstance(data["cumulative_actual_payoffs"], list):
+                loaded_tensor = torch.tensor(
+                    data["cumulative_actual_payoffs"], device=self.device, dtype=torch.float32
+                )
+                if loaded_tensor.dim() == 1:
+                    if self.config.execution.batch_size == 1:
+                        self.cumulative_actual_payoffs[0] = loaded_tensor
+                    else:
+                        self.cumulative_actual_payoffs[:] = loaded_tensor.unsqueeze(0)
+                else:
+                    self.cumulative_actual_payoffs.copy_(loaded_tensor)
+            else:
+                self.cumulative_actual_payoffs.copy_(
+                    data["cumulative_actual_payoffs"].to(self.device)
+                )
 
         rng_state = data.get("rng_state", {})
         if "python" in rng_state:
@@ -210,11 +268,9 @@ class ExperimentRunner:
             np.random.set_state(rng_state["numpy"])
         if "torch" in rng_state:
             torch.set_rng_state(rng_state["torch"])
-        logger.info(
-            f"Resumed experiment '{self.config.name}' from step {self.start_step}"
-        )
+        logger.info(f"Resumed experiment '{self.config.name}' from step {self.start_step}")
 
-    def run(self) -> Dict[str, Any]:
+    def run(self) -> dict[str, Any]:
         """Run simulation loop from current step to total_steps T.
 
         Returns
@@ -265,17 +321,24 @@ class ExperimentRunner:
                 progress.update(task_id, advance=k_steps)
 
                 # Heavy metrics, logging, stats buffering, and checkpointing at configured intervals
-                is_sample_step = (step % self.config.logging.sample_interval == 0)
-                is_log_step = (step % self.config.logging.log_interval == 0)
-                is_flush_step = (step % self.config.logging.save_stats_interval == 0)
-                is_ckpt_step = self.config.checkpoint.enabled and (step % self.config.checkpoint.save_interval == 0)
+                is_sample_step = step % self.config.logging.sample_interval == 0
+                is_log_step = step % self.config.logging.log_interval == 0
+                is_flush_step = step % self.config.logging.save_stats_interval == 0
+                is_ckpt_step = self.config.checkpoint.enabled and (
+                    step % self.config.checkpoint.save_interval == 0
+                )
 
                 if is_sample_step or is_log_step or is_ckpt_step or (step == total_steps):
                     curr_strats = self.dynamic.strategies
                     u_vecs = self.game.get_utility_vectors(curr_strats)
-                    cum_actual_payoffs_list = self.cumulative_actual_payoffs.tolist()
+                    cum_actual_payoffs_list = self.cumulative_actual_payoffs.T.tolist()
+                    if self.config.execution.batch_size == 1:
+                        cum_actual_payoffs_list = [l[0] for l in cum_actual_payoffs_list]
                     expected_payoffs = [
-                        torch.dot(u_vecs[i], curr_strats[i]).item() for i in range(self.game.num_players)
+                        torch.sum(u_vecs[i] * curr_strats[i], dim=-1).tolist()
+                        if self.config.execution.batch_size > 1
+                        else torch.dot(u_vecs[i], curr_strats[i]).item()
+                        for i in range(self.game.num_players)
                     ]
                     br_payoffs = self.game.best_response_payoffs(curr_strats)
                     instant_regrets, _ = compute_step_metrics(expected_payoffs, br_payoffs)
@@ -297,7 +360,19 @@ class ExperimentRunner:
                         self.stats_collector.flush_to_disk()
 
                     if is_log_step:
-                        postfix = f"max_cum_regret={max(cum_regrets):.4f} max_avg_regret={max(avg_regrets):.4f}"
+                        flat_cum = [
+                            item
+                            for sublist in cum_regrets
+                            for item in (sublist if isinstance(sublist, list) else [sublist])
+                        ]
+                        flat_avg = [
+                            item
+                            for sublist in avg_regrets
+                            for item in (sublist if isinstance(sublist, list) else [sublist])
+                        ]
+                        postfix = (
+                            f"max_cum_regret={max(flat_cum):.4f} max_avg_regret={max(flat_avg):.4f}"
+                        )
                         if getattr(self, "last_ckpt", None) is not None:
                             postfix += f" | ckpt={self.last_ckpt}"
                         progress.update(task_id, postfix=postfix)
@@ -320,8 +395,12 @@ class ExperimentRunner:
 
         # Final flush & summary
         last_chunk_path = self.stats_collector.flush_to_disk()
+        # Compute final end-of-run exact regrets
+        final_cum_actual_payoffs_list = self.cumulative_actual_payoffs.T.tolist()
+        if self.config.execution.batch_size == 1:
+            final_cum_actual_payoffs_list = [l[0] for l in final_cum_actual_payoffs_list]
         final_cum_regrets = compute_cumulative_regret(
-            self.cumulative_utility_vectors, self.cumulative_actual_payoffs
+            self.cumulative_utility_vectors, final_cum_actual_payoffs_list
         )
         final_avg_regrets = compute_average_regret(final_cum_regrets, total_steps)
 
@@ -335,8 +414,13 @@ class ExperimentRunner:
             "last_chunk_file": last_chunk_path,
         }
 
+        flat_final_avg = [
+            item
+            for sublist in final_avg_regrets
+            for item in (sublist if isinstance(sublist, list) else [sublist])
+        ]
         logger.info(
-            f"Simulation completed cleanly! Final Max Avg Regret: {max(final_avg_regrets):.6f}. "
+            f"Simulation completed cleanly! Final Max Avg Regret: {max(flat_final_avg):.6f}. "
             f"Stats session ID '{self.session_id}' in '{self.config.logging.output_dir}'"
         )
         return summary

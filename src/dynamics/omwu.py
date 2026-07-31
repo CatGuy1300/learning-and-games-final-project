@@ -1,6 +1,7 @@
 """Optimistic Multiplicative Weights Update (OMWU / Optimistic Hedge) learning dynamic."""
 
-from typing import Any, Dict, List, Optional
+from typing import Any
+
 import torch
 from torch.nn.utils.rnn import pad_sequence
 
@@ -21,35 +22,34 @@ class OptimisticMWU(BaseLearningDynamic):
     3. Log-Domain Updates & Epsilon Clamping: Maintains strategies in log-space and clamps to min=1e-30
        before torch.log() to prevent log(0) = -inf crashes.
     4. Optimistic Extrapolation: Uses 2 * u_t - u_{t-1} prediction momentum.
-    5. Log-Sum-Exp Normalization: Subtracts max(log_next) along dim=1 to prevent float overflow (+inf/NaN).
+    5. Log-Sum-Exp Normalization: Subtracts max(log_next) along dim=-1 to prevent float overflow (+inf/NaN).
     """
 
     def __init__(
         self,
-        action_sizes: List[int],
+        action_sizes: list[int],
         eta: float = 0.01,
         device: torch.device = torch.device("cpu"),
+        batch_size: int = 1,
     ) -> None:
         """Initialize OMWU dynamic."""
-        super().__init__(action_sizes=action_sizes, eta=eta, device=device)
-        self.stacked_prev_utilities = torch.zeros(
-            (self.num_players, self.max_action_size), device=self.device, dtype=torch.float32
-        )
+        super().__init__(action_sizes=action_sizes, eta=eta, device=device, batch_size=batch_size)
+        self.stacked_prev_utilities = torch.zeros_like(self.stacked_strategies)
         self.has_prev = False
-        self.log_strategies = torch.zeros(
-            (self.num_players, self.max_action_size), device=self.device, dtype=torch.float32
-        )
+        self.log_strategies = torch.zeros_like(self.stacked_strategies)
         self.reset()
 
-    def reset(self, initial_strategies: Optional[List[torch.Tensor]] = None) -> None:
+    def reset(self, initial_strategies: list[torch.Tensor] | None = None) -> None:
         """Reset strategy distributions to uniform or custom, and clear utility history."""
-        self.stacked_strategies.zero_()
-        for i, a_size in enumerate(self.action_sizes):
-            if initial_strategies is not None:
-                s = initial_strategies[i].clone().to(device=self.device, dtype=torch.float32)
-            else:
-                s = torch.full((a_size,), 1.0 / a_size, device=self.device, dtype=torch.float32)
-            self.stacked_strategies[i, :a_size] = s
+        if initial_strategies is not None:
+            self.strategies = [
+                s.clone().to(device=self.device, dtype=torch.float32) for s in initial_strategies
+            ]
+        else:
+            self.strategies = [
+                torch.full((a,), 1.0 / a, device=self.device, dtype=torch.float32)
+                for a in self.action_sizes
+            ]
 
         eps = 1e-30
         self.log_strategies.copy_(torch.log(torch.clamp(self.stacked_strategies, min=eps)))
@@ -57,7 +57,7 @@ class OptimisticMWU(BaseLearningDynamic):
         self.stacked_prev_utilities.zero_()
         self.has_prev = False
 
-    def step(self, utility_vectors: List[torch.Tensor]) -> List[torch.Tensor]:
+    def step(self, utility_vectors: list[torch.Tensor]) -> list[torch.Tensor]:
         """Update strategies using 2D vectorized OMWU step rule across all N players simultaneously."""
         # 1. Zero-loop C++ batched 2D tensor conversion (shape: num_players x max_action_size)
         u_tensors = [u.to(device=self.device, dtype=torch.float32) for u in utility_vectors]
@@ -84,27 +84,31 @@ class OptimisticMWU(BaseLearningDynamic):
         self.log_strategies.sub_(stacked_u_prev, alpha=self.eta)
 
         # 2. Max-Centering in-place
-        max_val = self.log_strategies.max(dim=1, keepdim=True).values
+        max_val = self.log_strategies.max(dim=-1, keepdim=True).values
         self.log_strategies.sub_(max_val)
         self.log_strategies.masked_fill_(~self.mask, -float("inf"))
 
         # 3. Softmax exponentiation in-place
         torch.exp(self.log_strategies, out=self.stacked_strategies)
         self.stacked_strategies.masked_fill_(~self.mask, 0.0)
-        
+
         # 4. Normalize in-place
-        self.stacked_strategies.div_(self.stacked_strategies.sum(dim=1, keepdim=True))
+        self.stacked_strategies.div_(self.stacked_strategies.sum(dim=-1, keepdim=True))
 
         self.stacked_prev_utilities.copy_(stacked_u_curr)
         return self.stacked_strategies
 
-    def get_state(self) -> Dict[str, Any]:
+    def get_state(self) -> dict[str, Any]:
         """Serialize state dictionary."""
         return {
             "strategies": [s.cpu() for s in self.strategies],
             "prev_utilities": (
                 [
-                    self.stacked_prev_utilities[i, : self.action_sizes[i]].cpu()
+                    (
+                        self.stacked_prev_utilities[0, i, : self.action_sizes[i]].cpu()
+                        if self.batch_size == 1
+                        else self.stacked_prev_utilities[:, i, : self.action_sizes[i]].cpu()
+                    )
                     for i in range(self.num_players)
                 ]
                 if self.stacked_prev_utilities is not None
@@ -113,7 +117,7 @@ class OptimisticMWU(BaseLearningDynamic):
             "eta": self.eta,
         }
 
-    def load_state(self, state_dict: Dict[str, Any]) -> None:
+    def load_state(self, state_dict: dict[str, Any]) -> None:
         """Load state dictionary."""
         self.strategies = [s.to(device=self.device) for s in state_dict["strategies"]]
         eps = 1e-30
@@ -121,11 +125,11 @@ class OptimisticMWU(BaseLearningDynamic):
         self.log_strategies.masked_fill_(~self.mask, -float("inf"))
         if state_dict["prev_utilities"] is not None:
             self.has_prev = True
-            self.stacked_prev_utilities = torch.zeros(
-                (self.num_players, self.max_action_size), device=self.device, dtype=torch.float32
-            )
+            self.stacked_prev_utilities = torch.zeros_like(self.stacked_strategies)
             for i, u in enumerate(state_dict["prev_utilities"]):
-                self.stacked_prev_utilities[i, : self.action_sizes[i]] = u.to(device=self.device)
+                self.stacked_prev_utilities[
+                    0 if self.batch_size == 1 else slice(None), i, : self.action_sizes[i]
+                ] = u.to(device=self.device)
         else:
             self.stacked_prev_utilities.zero_()
             self.has_prev = False

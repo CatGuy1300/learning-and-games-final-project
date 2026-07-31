@@ -1,7 +1,7 @@
 """Validation utilities and rule checking for games, configurations, and strategies."""
 
-from typing import List, Tuple
 import torch
+
 from src.config.schemas import ExperimentConfig, GameConfig
 
 
@@ -32,14 +32,16 @@ def validate_game_config(config: GameConfig) -> None:
 
     u_min, u_max = config.utility_range
     if u_min >= u_max:
-        raise ValueError(f"utility_range u_min ({u_min}) must be strictly less than u_max ({u_max})")
+        raise ValueError(
+            f"utility_range u_min ({u_min}) must be strictly less than u_max ({u_max})"
+        )
 
 
 def validate_payoff_tensors(
-    payoffs: List[torch.Tensor],
+    payoffs: list[torch.Tensor],
     num_players: int,
-    action_sizes: List[int],
-    utility_range: Tuple[float, float],
+    action_sizes: list[int],
+    utility_range: tuple[float, float],
 ) -> None:
     """Validate that payoff tensors conform to expected shapes and range bounds.
 
@@ -61,9 +63,9 @@ def validate_payoff_tensors(
     u_min, u_max = utility_range
 
     for i, p_tensor in enumerate(payoffs):
-        if tuple(p_tensor.shape) != expected_shape:
+        if tuple(p_tensor.shape) != expected_shape and tuple(p_tensor.shape)[1:] != expected_shape:
             raise ValueError(
-                f"Player {i} payoff tensor shape {tuple(p_tensor.shape)} does not match expected {expected_shape}"
+                f"Player {i} payoff tensor shape {tuple(p_tensor.shape)} does not match expected {expected_shape} or (B,) + {expected_shape}"
             )
         # Check numerical bounds (allowing small floating point epsilon)
         min_val = p_tensor.min().item()
@@ -75,7 +77,7 @@ def validate_payoff_tensors(
             )
 
 
-def validate_strategies(strategies: List[torch.Tensor], action_sizes: List[int]) -> None:
+def validate_strategies(strategies: list[torch.Tensor], action_sizes: list[int]) -> None:
     """Validate that strategy vectors form valid probability distributions on the simplex.
 
     Parameters
@@ -86,20 +88,20 @@ def validate_strategies(strategies: List[torch.Tensor], action_sizes: List[int])
         Expected action sizes per player.
     """
     for i, (strat, a_size) in enumerate(zip(strategies, action_sizes)):
-        if strat.dim() != 1 or strat.shape[0] != a_size:
+        if strat.shape[-1] != a_size or (strat.dim() != 1 and strat.dim() != 2):
             raise ValueError(
-                f"Player {i} strategy shape {tuple(strat.shape)} does not match action size {a_size}"
+                f"Player {i} strategy shape {tuple(strat.shape)} does not match action size {a_size} or (B, {a_size})"
             )
         if torch.any(strat < -1e-6):
             raise ValueError(f"Player {i} strategy has negative probabilities: {strat}")
-        prob_sum = strat.sum().item()
-        if not abs(prob_sum - 1.0) < 1e-4:
-            raise ValueError(f"Player {i} strategy does not sum to 1.0 (got {prob_sum:.6f}): {strat}")
+        prob_sum = strat.sum(dim=-1)
+        if not torch.all(torch.abs(prob_sum - 1.0) < 1e-4):
+            raise ValueError(f"Player {i} strategy does not sum to 1.0 (got {prob_sum}): {strat}")
 
 
 def clamp_utility_matrices(
-    payoffs: List[torch.Tensor], utility_range: Tuple[float, float]
-) -> List[torch.Tensor]:
+    payoffs: list[torch.Tensor], utility_range: tuple[float, float]
+) -> list[torch.Tensor]:
     """Project / clamp payoff tensors into the allowed utility range [u_min, u_max].
 
     Parameters

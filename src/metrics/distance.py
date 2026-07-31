@@ -1,12 +1,11 @@
 """Strategy trajectory distance and convergence metrics."""
 
-from typing import List
 import torch
 
 
 def compute_strategy_movement(
-    prev_strategies: List[torch.Tensor], curr_strategies: List[torch.Tensor]
-) -> List[float]:
+    prev_strategies: list[torch.Tensor], curr_strategies: list[torch.Tensor]
+) -> list[float]:
     """Compute Euclidean norm L2 distance ||x_t - x_{t-1}||_2 per player.
 
     Parameters
@@ -28,8 +27,8 @@ def compute_strategy_movement(
     return movements
 
 
-def compute_strategy_entropy(strategies: List[torch.Tensor]) -> List[float]:
-    """Compute Shannon entropy H(x_i) = - \sum_a x_{i,a} \log(x_{i,a}) per player.
+def compute_strategy_entropy(strategies: list[torch.Tensor]) -> list[float]:
+    r"""Compute Shannon entropy H(x_i) = - \sum_a x_{i,a} \log(x_{i,a}) per player.
 
     Parameters
     ----------

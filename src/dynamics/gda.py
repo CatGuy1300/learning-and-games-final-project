@@ -1,6 +1,7 @@
 """Gradient Descent Ascent (GDA) learning dynamic baseline with simplex projection."""
 
-from typing import Any, Dict, List, Optional
+from typing import Any
+
 import torch
 from torch.nn.utils.rnn import pad_sequence
 
@@ -13,25 +14,28 @@ class GradientDescentAscent(BaseLearningDynamic):
 
     def __init__(
         self,
-        action_sizes: List[int],
+        action_sizes: list[int],
         eta: float = 0.01,
         device: torch.device = torch.device("cpu"),
+        batch_size: int = 1,
     ) -> None:
         """Initialize GDA dynamic."""
-        super().__init__(action_sizes=action_sizes, eta=eta, device=device)
+        super().__init__(action_sizes=action_sizes, eta=eta, device=device, batch_size=batch_size)
         self.reset()
 
-    def reset(self, initial_strategies: Optional[List[torch.Tensor]] = None) -> None:
+    def reset(self, initial_strategies: list[torch.Tensor] | None = None) -> None:
         """Reset strategy distributions."""
-        self.stacked_strategies.zero_()
-        for i, a_size in enumerate(self.action_sizes):
-            if initial_strategies is not None:
-                s = initial_strategies[i].clone().to(device=self.device, dtype=torch.float32)
-            else:
-                s = torch.full((a_size,), 1.0 / a_size, device=self.device, dtype=torch.float32)
-            self.stacked_strategies[i, :a_size] = s
+        if initial_strategies is not None:
+            self.strategies = [
+                s.clone().to(device=self.device, dtype=torch.float32) for s in initial_strategies
+            ]
+        else:
+            self.strategies = [
+                torch.full((a,), 1.0 / a, device=self.device, dtype=torch.float32)
+                for a in self.action_sizes
+            ]
 
-    def step(self, utility_vectors: List[torch.Tensor]) -> List[torch.Tensor]:
+    def step(self, utility_vectors: list[torch.Tensor]) -> list[torch.Tensor]:
         """Update strategies using 2D batched GDA step projected onto simplex across all N players simultaneously."""
         u_tensors = [u.to(device=self.device, dtype=torch.float32) for u in utility_vectors]
         stacked_u_curr = pad_sequence(u_tensors, batch_first=True, padding_value=0.0)
@@ -54,14 +58,14 @@ class GradientDescentAscent(BaseLearningDynamic):
         project_onto_simplex_batch(raw_next, mask=self.mask, out=self.stacked_strategies)
         return self.stacked_strategies
 
-    def get_state(self) -> Dict[str, Any]:
+    def get_state(self) -> dict[str, Any]:
         """Serialize state dictionary."""
         return {
             "strategies": [s.cpu() for s in self.strategies],
             "eta": self.eta,
         }
 
-    def load_state(self, state_dict: Dict[str, Any]) -> None:
+    def load_state(self, state_dict: dict[str, Any]) -> None:
         """Load state dictionary."""
         self.strategies = [s.to(device=self.device) for s in state_dict["strategies"]]
         self.eta = state_dict.get("eta", self.eta)

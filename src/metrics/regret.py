@@ -1,13 +1,12 @@
 """Vectorized regret and payoff performance metrics."""
 
-from typing import Dict, List, Tuple
 import torch
 
 
 def compute_step_metrics(
-    expected_payoffs: List[float],
-    best_response_payoffs: List[float],
-) -> Tuple[List[float], List[float]]:
+    expected_payoffs: list[float],
+    best_response_payoffs: list[float],
+) -> tuple[list[float], list[float]]:
     """Compute instantaneous regret and best-response gap for single step t.
 
     Instantaneous regret for player i:
@@ -18,16 +17,21 @@ def compute_step_metrics(
     Tuple[List[float], List[float]]
         (instant_regrets, best_response_payoffs)
     """
-    instant_regrets = [
-        br - exp for br, exp in zip(best_response_payoffs, expected_payoffs)
-    ]
+    if isinstance(best_response_payoffs[0], list):
+        # Batched case: List of lists (outer player, inner batch)
+        instant_regrets = [
+            [br_b - exp_b for br_b, exp_b in zip(br, exp)]
+            for br, exp in zip(best_response_payoffs, expected_payoffs)
+        ]
+    else:
+        instant_regrets = [br - exp for br, exp in zip(best_response_payoffs, expected_payoffs)]
     return instant_regrets, best_response_payoffs
 
 
 def compute_cumulative_regret(
-    cumulative_utility_vectors: List[torch.Tensor],
-    cumulative_actual_payoffs: List[float],
-) -> List[float]:
+    cumulative_utility_vectors: list[torch.Tensor],
+    cumulative_actual_payoffs: list[float],
+) -> list[float]:
     r"""Compute cumulative regret R_i(T) for each player up to step T.
 
     R_i(T) = max_{a_i} \sum_{t=1}^T u_i(a_i, x^{-i}_t) - \sum_{t=1}^T u_i(x_t)
@@ -47,16 +51,19 @@ def compute_cumulative_regret(
     num_players = len(cumulative_utility_vectors)
     cum_regrets = []
     for i in range(num_players):
-        max_fixed_action_payoff = cumulative_utility_vectors[i].max().item()
-        actual_payoff = cumulative_actual_payoffs[i]
-        regret_i = max_fixed_action_payoff - actual_payoff
+        if cumulative_utility_vectors[i].dim() == 2:
+            max_fixed_action_payoff = cumulative_utility_vectors[i].max(dim=-1).values.tolist()
+            actual_payoff = cumulative_actual_payoffs[i]
+            regret_i = [m - a for m, a in zip(max_fixed_action_payoff, actual_payoff)]
+        else:
+            max_fixed_action_payoff = cumulative_utility_vectors[i].max().item()
+            actual_payoff = cumulative_actual_payoffs[i]
+            regret_i = max_fixed_action_payoff - actual_payoff
         cum_regrets.append(regret_i)
     return cum_regrets
 
 
-def compute_average_regret(
-    cumulative_regrets: List[float], total_steps: int
-) -> List[float]:
+def compute_average_regret(cumulative_regrets: list[float], total_steps: int) -> list[float]:
     """Compute average regret R_i(T) / T for each player.
 
     Parameters
@@ -73,4 +80,6 @@ def compute_average_regret(
     """
     if total_steps <= 0:
         return [0.0] * len(cumulative_regrets)
+    if isinstance(cumulative_regrets[0], list):
+        return [[r_b / total_steps for r_b in r] for r in cumulative_regrets]
     return [r / float(total_steps) for r in cumulative_regrets]

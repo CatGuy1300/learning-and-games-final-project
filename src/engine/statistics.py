@@ -2,7 +2,8 @@
 
 import glob
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any
+
 import torch
 
 from src.utils.logging import setup_logger
@@ -28,24 +29,24 @@ class StatsCollector:
         os.makedirs(self.output_dir, exist_ok=True)
 
         self.chunk_index: int = 0
-        self.history_steps: List[int] = []
-        self.history_strategies: List[List[List[float]]] = []
-        self.history_expected_payoffs: List[List[float]] = []
-        self.history_instant_regrets: List[List[float]] = []
-        self.history_cum_regrets: List[List[float]] = []
-        self.payoffs: List[torch.Tensor] = []
+        self.history_steps: list[int] = []
+        self.history_strategies: list[list[list[float]]] = []
+        self.history_expected_payoffs: list[list[float]] = []
+        self.history_instant_regrets: list[list[float]] = []
+        self.history_cum_regrets: list[list[float]] = []
+        self.payoffs: list[torch.Tensor] = []
 
-    def set_payoffs(self, payoffs: List[torch.Tensor]) -> None:
+    def set_payoffs(self, payoffs: list[torch.Tensor]) -> None:
         """Set game payoff tensors to be saved with statistics."""
         self.payoffs = [p.cpu().clone() for p in payoffs]
 
     def record_step(
         self,
         step: int,
-        strategies: List[torch.Tensor],
-        expected_payoffs: List[float],
-        instant_regrets: List[float],
-        cum_regrets: List[float],
+        strategies: list[torch.Tensor],
+        expected_payoffs: list[float],
+        instant_regrets: list[float],
+        cum_regrets: list[float],
     ) -> None:
         """Record single step metrics into active RAM chunk buffer."""
         self.history_steps.append(step)
@@ -56,7 +57,7 @@ class StatsCollector:
         self.history_instant_regrets.append(instant_regrets)
         self.history_cum_regrets.append(cum_regrets)
 
-    def flush_to_disk(self) -> Optional[str]:
+    def flush_to_disk(self) -> str | None:
         """Flush active chunk buffer to an incremental PyTorch .pt chunk file and clear RAM.
 
         Returns
@@ -105,7 +106,7 @@ class StatsCollector:
         return filepath
 
 
-def load_experiment_stats(output_dir: str = "outputs", session_id: str = "") -> Dict[str, Any]:
+def load_experiment_stats(output_dir: str = "outputs", session_id: str = "") -> dict[str, Any]:
     """Load and concatenate all incremental stats chunk files for a given session.
 
     Parameters
@@ -128,7 +129,9 @@ def load_experiment_stats(output_dir: str = "outputs", session_id: str = "") -> 
         legacy_file = os.path.join(output_dir, f"stats_{session_id}.pt")
         if os.path.exists(legacy_file):
             return torch.load(legacy_file, map_location="cpu", weights_only=False)
-        raise FileNotFoundError(f"No statistics files found for session_id '{session_id}' in '{output_dir}'")
+        raise FileNotFoundError(
+            f"No statistics files found for session_id '{session_id}' in '{output_dir}'"
+        )
 
     all_steps = []
     all_strategies = []
