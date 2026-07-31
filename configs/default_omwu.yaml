@@ -1,0 +1,27 @@
+name: "matching_pennies_omwu"
+game:
+  num_players: 2
+  action_sizes: [2, 2]
+  utility_range: [-1.0, 1.0]
+  generator: "matching_pennies"
+dynamic:
+  algorithm: "omwu"
+  eta: 0.05
+  initial_strategy_type: "custom"
+  custom_initial_strategies:
+    - [0.8, 0.2]
+    - [0.3, 0.7]
+checkpoint:
+  enabled: true
+  checkpoint_dir: "checkpoints"
+  save_interval: 1000
+  keep_top_k: 5
+logging:
+  log_level: "INFO"
+  log_interval: 500
+  save_stats_interval: 100
+  output_dir: "outputs"
+execution:
+  total_steps: 5000
+  device: "auto"
+  seed: 42

@@ -1,0 +1,25 @@
+name: "3player_random_extra_gradient"
+game:
+  num_players: 3
+  action_sizes: [3, 4, 2]
+  utility_range: [-1.0, 1.0]
+  generator: "random"
+  seed: 123
+dynamic:
+  algorithm: "extra_gradient"
+  eta: 0.02
+  initial_strategy_type: "uniform"
+checkpoint:
+  enabled: true
+  checkpoint_dir: "checkpoints"
+  save_interval: 2000
+  keep_top_k: 3
+logging:
+  log_level: "INFO"
+  log_interval: 500
+  save_stats_interval: 100
+  output_dir: "outputs"
+execution:
+  total_steps: 4000
+  device: "auto"
+  seed: 123

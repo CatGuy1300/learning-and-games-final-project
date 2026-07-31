@@ -1,0 +1,11 @@
+name: "test_extra_gradient"
+game:
+  generator: "random"
+  num_players: 2
+  action_sizes: [2, 2]
+  utility_range: [-1.0, 1.0]
+dynamic:
+  algorithm: "extra_gradient"
+  eta: 0.05
+execution:
+  compile: true
