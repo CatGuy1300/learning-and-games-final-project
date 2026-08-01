@@ -9,11 +9,11 @@ A PyTorch-accelerated framework for investigating learning dynamics in general-s
 
 ## 📌 Project Overview
 
-In finite general-sum multiplayer games, when all players employ no-regret learning algorithms like **Optimistic Multiplicative Weights Update (OMWU)** or **Extra Gradient (EG)**, theoretical upper bounds guarantee low regret scaling such as $\mathcal{O}(\log^4 T)$ or $\mathcal{O}(\log T)$.
+In finite general-sum multiplayer games, when all players employ no-regret learning algorithms like **Optimistic Multiplicative Weights Update (OMWU)** or **MirrorProx**, theoretical upper bounds guarantee low regret scaling such as $\mathcal{O}(\log^4 T)$ or $\mathcal{O}(\log T)$.
 
 This project implements:
 1. **$N$-Player General-Sum Game Framework**: PyTorch CUDA/CPU tensor backends for $N$-player finite games with arbitrary action dimensions $(A_1, \dots, A_N)$ and configurable utility ranges $[u_{\min}, u_{\max}]$.
-2. **Generic Learning Dynamics**: Simplex-projected dynamics including OMWU (Optimistic Hedge), EG (Optimistic Gradient Descent), MWU, and GDA.
+2. **Generic Learning Dynamics**: Simplex-projected dynamics including OMWU (Optimistic Hedge), MirrorProx (Entropy-regularized Extragradient), and MWU.
 3. **Long-Horizon Execution Engine**: Periodic checkpointing, session token tracking, streaming statistics serialization (`.pt`), and structured progress reporting (`rich`/`tqdm`).
 4. **Reproducible Experiments**: CLI execution via Typer and YAML configuration files, alongside Jupyter Notebook integration for interactive analysis.
 
@@ -46,12 +46,21 @@ Run a 3-player random game:
 uv run learning-games run --config configs/nplayer_random.yaml
 ```
 
-### 2. Resume Experiment from Checkpoint
+### 2. Configure Theorem-Compliant Learning Rates
+By default, the library infers a practical constant learning rate ($\eta$) suitable for discovering empirical chaos/cycles over long horizons. However, if you require rigorous mathematical bounds (e.g. $O(\text{polylog } T)$ regret in OMWU), you can activate theoretically-sound decay rates:
+```yaml
+# In your config.yaml
+dynamic:
+  algorithm: "omwu"
+  strict_theory_eta: true
+```
+
+### 3. Resume Experiment from Checkpoint
 ```bash
 uv run learning-games run --resume checkpoints/checkpoint_step_50000.pt
 ```
 
-### 3. Validate Configuration File
+### 4. Validate Configuration File
 ```bash
 uv run learning-games validate-config --config configs/default_omwu.yaml
 ```
@@ -87,7 +96,7 @@ uv run pytest -v tests/
 ├── src/                   # Source package
 │   ├── cli.py             # Typer CLI application
 │   ├── config/            # Pydantic schemas & validation rules
-│   ├── dynamics/          # OMWU, EG, MWU, GDA learning dynamics
+│   ├── dynamics/          # OMWU, MirrorProx, MWU learning dynamics
 │   ├── engine/            # Runner, Checkpointing, Statistics collector
 │   ├── games/             # N-player & matrix game environments & generators
 │   ├── metrics/           # Regret, best response, strategy distance calculations
