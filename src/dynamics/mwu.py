@@ -9,6 +9,9 @@ from src.dynamics.base import BaseLearningDynamic
 
 
 import math
+from src.utils.logging import setup_logger
+
+logger = setup_logger("mwu")
 
 class MultiplicativeWeightsUpdate(BaseLearningDynamic):
     """Vanilla Multiplicative Weights Update (MWU / Hedge)."""
@@ -26,6 +29,7 @@ class MultiplicativeWeightsUpdate(BaseLearningDynamic):
             inferred_eta = eta
         else:
             inferred_eta = math.sqrt(math.log(max(action_sizes)) / T)
+            logger.info(f"Inferred MWU theory eta = {inferred_eta:.6f} (sqrt(log(max(A)) / T))")
             
         super().__init__(action_sizes=action_sizes, eta=inferred_eta, device=device, batch_size=batch_size)
         self.log_strategies = torch.zeros_like(self.stacked_strategies)

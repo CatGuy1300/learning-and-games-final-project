@@ -6,6 +6,9 @@ import torch
 from torch.nn.utils.rnn import pad_sequence
 
 from src.dynamics.base import BaseLearningDynamic
+from src.utils.logging import setup_logger
+
+logger = setup_logger("mirror_prox")
 
 
 class MirrorProx(BaseLearningDynamic):
@@ -29,6 +32,7 @@ class MirrorProx(BaseLearningDynamic):
             inferred_eta = eta
         else:
             inferred_eta = 1.0 / (16.0 * len(action_sizes) * max(action_sizes))
+            logger.info(f"Inferred MirrorProx empirical eta = {inferred_eta:.6f} (1 / (16 * N * max(A)))")
             
         super().__init__(action_sizes=action_sizes, eta=inferred_eta, device=device, batch_size=batch_size)
         self.stacked_logits = torch.zeros_like(self.stacked_strategies)

@@ -9,6 +9,9 @@ from src.dynamics.base import BaseLearningDynamic
 
 
 import math
+from src.utils.logging import setup_logger
+
+logger = setup_logger("omwu")
 
 class OptimisticMWU(BaseLearningDynamic):
     """Optimistic Multiplicative Weights Update (OMWU) for general N-player finite games.
@@ -41,8 +44,10 @@ class OptimisticMWU(BaseLearningDynamic):
             inferred_eta = eta
         elif strict_theory_eta:
             inferred_eta = 1.0 / (16.0 * len(action_sizes) * (math.log(T) ** 4))
+            logger.info(f"Inferred OMWU strict theory eta = {inferred_eta:.6f} (1 / (16 * N * log^4(T)))")
         else:
             inferred_eta = 1.0 / (8.0 * max(action_sizes))
+            logger.info(f"Inferred OMWU empirical eta = {inferred_eta:.6f} (1 / (8 * max(A)))")
             
         super().__init__(action_sizes=action_sizes, eta=inferred_eta, device=device, batch_size=batch_size)
         self.stacked_prev_utilities = torch.zeros_like(self.stacked_strategies)
