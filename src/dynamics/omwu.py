@@ -8,6 +8,8 @@ from torch.nn.utils.rnn import pad_sequence
 from src.dynamics.base import BaseLearningDynamic
 
 
+import math
+
 class OptimisticMWU(BaseLearningDynamic):
     """Optimistic Multiplicative Weights Update (OMWU) for general N-player finite games.
 
@@ -28,12 +30,21 @@ class OptimisticMWU(BaseLearningDynamic):
     def __init__(
         self,
         action_sizes: list[int],
-        eta: float = 0.01,
+        eta: float | None = None,
         device: torch.device = torch.device("cpu"),
         batch_size: int = 1,
+        T: int = 10000,
+        strict_theory_eta: bool = False,
     ) -> None:
         """Initialize OMWU dynamic."""
-        super().__init__(action_sizes=action_sizes, eta=eta, device=device, batch_size=batch_size)
+        if eta is not None:
+            inferred_eta = eta
+        elif strict_theory_eta:
+            inferred_eta = 1.0 / (16.0 * len(action_sizes) * (math.log(T) ** 4))
+        else:
+            inferred_eta = 1.0 / (8.0 * max(action_sizes))
+            
+        super().__init__(action_sizes=action_sizes, eta=inferred_eta, device=device, batch_size=batch_size)
         self.stacked_prev_utilities = torch.zeros_like(self.stacked_strategies)
         self.has_prev = False
         self.log_strategies = torch.zeros_like(self.stacked_strategies)

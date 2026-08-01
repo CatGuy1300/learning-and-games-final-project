@@ -31,9 +31,10 @@ class DynamicConfig(BaseModel):
 
     algorithm: str = Field(
         default="omwu",
-        description="Learning dynamic type ('omwu', 'extra_gradient', 'mwu', 'gda', 'mirror_prox')",
+        description="Learning dynamic type ('omwu', 'mwu', 'mirror_prox')",
     )
-    eta: float = Field(default=0.01, gt=0.0, description="Learning rate step size eta")
+    eta: float | None = Field(default=None, gt=0.0, description="Learning rate step size eta. If None, it is inferred.")
+    strict_theory_eta: bool = Field(default=False, description="Use strict horizon-dependent theoretical step size")
     initial_strategy_type: str = Field(
         default="uniform",
         description="Initial strategy mode ('uniform', 'random', 'custom')",

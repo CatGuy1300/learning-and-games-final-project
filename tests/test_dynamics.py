@@ -3,64 +3,17 @@
 import pytest
 import torch
 
-from src.dynamics.extra_gradient import (
-    ExtraGradient,
-    project_onto_simplex,
-    project_onto_simplex_batch,
-)
-from src.dynamics.gda import GradientDescentAscent
+
 from src.dynamics.mwu import MultiplicativeWeightsUpdate
 from src.dynamics.omwu import OptimisticMWU
 
 
-def test_project_onto_simplex_1d():
-    """Test 1D simplex projection."""
-    v = torch.tensor([1.5, -0.5, 0.5])
-    proj = project_onto_simplex(v)
 
-    assert torch.all(proj >= 0.0)
-    assert abs(proj.sum().item() - 1.0) < 1e-5
-    assert torch.allclose(proj, torch.tensor([1.0, 0.0, 0.0]))
-
-
-def test_project_onto_simplex_batch_equivalence():
-    """Test that batched 2D simplex projection with mask equals row-by-row 1D projections."""
-    V = torch.tensor(
-        [
-            [1.5, -0.5, 0.5, 0.0],
-            [0.8, 0.4, 0.3, 0.1],
-            [2.0, -1.0, 0.0, 0.0],
-        ],
-        dtype=torch.float32,
-    )
-    # Mask indicating row 0 has length 3, row 1 has length 4, row 2 has length 2
-    mask = torch.tensor(
-        [
-            [True, True, True, False],
-            [True, True, True, True],
-            [True, True, False, False],
-        ]
-    )
-
-    batch_proj = project_onto_simplex_batch(V, mask=mask)
-
-    # Verify each row
-    row0_expected = project_onto_simplex(torch.tensor([1.5, -0.5, 0.5]))
-    row1_expected = project_onto_simplex(torch.tensor([0.8, 0.4, 0.3, 0.1]))
-    row2_expected = project_onto_simplex(torch.tensor([2.0, -1.0]))
-
-    assert torch.allclose(batch_proj[0, :3], row0_expected)
-    assert batch_proj[0, 3].item() == 0.0
-
-    assert torch.allclose(batch_proj[1, :4], row1_expected)
-
-    assert torch.allclose(batch_proj[2, :2], row2_expected)
-    assert torch.all(batch_proj[2, 2:] == 0.0)
 
 
 @pytest.mark.parametrize(
     "dynamic_cls",
-    [OptimisticMWU, ExtraGradient, MultiplicativeWeightsUpdate, GradientDescentAscent],
+    [OptimisticMWU, MultiplicativeWeightsUpdate],
 )
 def test_heterogeneous_action_sizes_vectorized_step(dynamic_cls):
     """Test 2D vectorized dynamics with heterogeneous action sizes [3, 5, 2]."""

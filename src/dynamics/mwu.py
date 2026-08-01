@@ -8,18 +8,26 @@ from torch.nn.utils.rnn import pad_sequence
 from src.dynamics.base import BaseLearningDynamic
 
 
+import math
+
 class MultiplicativeWeightsUpdate(BaseLearningDynamic):
     """Vanilla Multiplicative Weights Update (MWU / Hedge)."""
 
     def __init__(
         self,
         action_sizes: list[int],
-        eta: float = 0.01,
+        eta: float | None = None,
         device: torch.device = torch.device("cpu"),
         batch_size: int = 1,
+        T: int = 10000,
     ) -> None:
         """Initialize MWU dynamic."""
-        super().__init__(action_sizes=action_sizes, eta=eta, device=device, batch_size=batch_size)
+        if eta is not None:
+            inferred_eta = eta
+        else:
+            inferred_eta = math.sqrt(math.log(max(action_sizes)) / T)
+            
+        super().__init__(action_sizes=action_sizes, eta=inferred_eta, device=device, batch_size=batch_size)
         self.log_strategies = torch.zeros_like(self.stacked_strategies)
         self.reset()
 

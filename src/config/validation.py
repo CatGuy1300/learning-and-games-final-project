@@ -125,5 +125,5 @@ def validate_experiment_config(config: ExperimentConfig) -> None:
     validate_game_config(config.game)
     if config.execution.total_steps < 1:
         raise ValueError(f"total_steps must be >= 1, got {config.execution.total_steps}")
-    if config.dynamic.eta <= 0:
-        raise ValueError(f"Learning rate eta must be > 0, got {config.dynamic.eta}")
+    if config.dynamic.eta is not None and config.dynamic.eta <= 0:
+        raise ValueError(f"eta must be > 0, got {config.dynamic.eta}")

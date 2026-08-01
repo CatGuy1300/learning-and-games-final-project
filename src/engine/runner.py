@@ -19,8 +19,6 @@ from rich.progress import (
 from src.config.schemas import ExperimentConfig
 from src.config.validation import validate_experiment_config
 from src.dynamics.base import BaseLearningDynamic
-from src.dynamics.extra_gradient import ExtraGradient
-from src.dynamics.gda import GradientDescentAscent
 from src.dynamics.mirror_prox import MirrorProx
 from src.dynamics.mwu import MultiplicativeWeightsUpdate
 from src.dynamics.omwu import OptimisticMWU
@@ -93,22 +91,30 @@ def instantiate_dynamic(
 
     if algo == "omwu":
         return OptimisticMWU(
-            action_sizes=action_sizes, eta=eta, device=device, batch_size=batch_size
-        )
-    elif algo == "extra_gradient":
-        return ExtraGradient(
-            action_sizes=action_sizes, eta=eta, device=device, batch_size=batch_size
+            action_sizes=action_sizes,
+            eta=eta,
+            device=device,
+            batch_size=batch_size,
+            T=config.execution.total_steps,
+            strict_theory_eta=config.dynamic.strict_theory_eta,
         )
     elif algo == "mwu":
         return MultiplicativeWeightsUpdate(
-            action_sizes=action_sizes, eta=eta, device=device, batch_size=batch_size
-        )
-    elif algo == "gda":
-        return GradientDescentAscent(
-            action_sizes=action_sizes, eta=eta, device=device, batch_size=batch_size
+            action_sizes=action_sizes,
+            eta=eta,
+            device=device,
+            batch_size=batch_size,
+            T=config.execution.total_steps,
         )
     elif algo == "mirror_prox":
-        return MirrorProx(action_sizes=action_sizes, eta=eta, device=device, batch_size=batch_size)
+        return MirrorProx(
+            action_sizes=action_sizes,
+            eta=eta,
+            device=device,
+            batch_size=batch_size,
+            T=config.execution.total_steps,
+            strict_theory_eta=config.dynamic.strict_theory_eta,
+        )
     else:
         raise ValueError(f"Unsupported learning dynamic algorithm: '{algo}'")
 

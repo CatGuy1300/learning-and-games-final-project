@@ -18,12 +18,19 @@ class MirrorProx(BaseLearningDynamic):
     def __init__(
         self,
         action_sizes: list[int],
-        eta: float = 0.01,
+        eta: float | None = None,
         device: torch.device = torch.device("cpu"),
         batch_size: int = 1,
+        T: int = 10000,
+        strict_theory_eta: bool = False,
     ) -> None:
         """Initialize MirrorProx dynamic."""
-        super().__init__(action_sizes=action_sizes, eta=eta, device=device, batch_size=batch_size)
+        if eta is not None:
+            inferred_eta = eta
+        else:
+            inferred_eta = 1.0 / (16.0 * len(action_sizes) * max(action_sizes))
+            
+        super().__init__(action_sizes=action_sizes, eta=inferred_eta, device=device, batch_size=batch_size)
         self.stacked_logits = torch.zeros_like(self.stacked_strategies)
         self.logits_half = torch.zeros_like(self.stacked_logits)
         self.is_half_step = False

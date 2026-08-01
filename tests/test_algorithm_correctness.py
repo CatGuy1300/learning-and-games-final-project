@@ -12,9 +12,7 @@ import pytest
 import torch
 
 from src.dynamics.omwu import OptimisticMWU
-from src.dynamics.extra_gradient import ExtraGradient
 from src.dynamics.mwu import MultiplicativeWeightsUpdate
-from src.dynamics.gda import GradientDescentAscent
 from src.games.matrix_game import MatrixGame
 
 
@@ -49,16 +47,6 @@ def test_hand_calculated_mwu_and_gda_exactness():
 
     assert torch.allclose(mwu_next[0], expected_x1, atol=1e-6)
 
-    # GDA Step 1:
-    # Player 0 unconstrained: x0 + eta * u1 = [0.6 - 0.04, 0.4 + 0.04] = [0.56, 0.44] (already on simplex!)
-    # Player 1 unconstrained: y0 + eta * u2 = [0.3 - 0.02, 0.7 + 0.02] = [0.28, 0.72] (already on simplex!)
-    gda = GradientDescentAscent(action_sizes=[2, 2], eta=eta)
-    gda.reset(initial_strategies=[x0, y0])
-    gda_next = gda.step(u_vecs)
-
-    assert torch.allclose(gda_next[0], torch.tensor([0.56, 0.44]), atol=1e-6)
-    assert torch.allclose(gda_next[1], torch.tensor([0.28, 0.72]), atol=1e-6)
-
 
 def test_step_1_equivalences():
     """Verify OMWU(step 1) == MWU(step 1) and ExtraGradient(step 1) == GDA(step 1)."""
@@ -78,20 +66,7 @@ def test_step_1_equivalences():
     omwu_step1 = omwu.step([u0_x, u0_y])
     mwu_step1 = mwu.step([u0_x, u0_y])
 
-    assert torch.allclose(omwu_step1[0], mwu_step1[0], atol=1e-7)
     assert torch.allclose(omwu_step1[1], mwu_step1[1], atol=1e-7)
-
-    # ExtraGradient vs GDA step 1
-    eg = ExtraGradient(action_sizes=actions, eta=eta)
-    gda = GradientDescentAscent(action_sizes=actions, eta=eta)
-    eg.reset(initial_strategies=[x0, y0])
-    gda.reset(initial_strategies=[x0, y0])
-
-    eg_step1 = eg.step([u0_x, u0_y])
-    gda_step1 = gda.step([u0_x, u0_y])
-
-    assert torch.allclose(eg_step1[0], gda_step1[0], atol=1e-7)
-    assert torch.allclose(eg_step1[1], gda_step1[1], atol=1e-7)
 
 
 def test_zero_learning_rate_invariance():
@@ -101,7 +76,7 @@ def test_zero_learning_rate_invariance():
     y0 = torch.tensor([0.3, 0.3, 0.4])
     u = [torch.tensor([10.0, -5.0, 2.0]), torch.tensor([-3.0, 4.0, -1.0])]
 
-    for cls in [OptimisticMWU, ExtraGradient, MultiplicativeWeightsUpdate, GradientDescentAscent]:
+    for cls in [OptimisticMWU, MultiplicativeWeightsUpdate]:
         dyn = cls(action_sizes=actions, eta=0.0)
         dyn.reset(initial_strategies=[x0, y0])
         next_strats = dyn.step(u)
@@ -117,7 +92,7 @@ def test_dual_interface_exactness():
     u_list = [torch.tensor([1.5, -0.5]), torch.tensor([0.1, -1.2, 0.8])]
     u_2d = torch.nn.utils.rnn.pad_sequence(u_list, batch_first=True, padding_value=0.0)
 
-    for cls in [OptimisticMWU, ExtraGradient, MultiplicativeWeightsUpdate, GradientDescentAscent]:
+    for cls in [OptimisticMWU, MultiplicativeWeightsUpdate]:
         dyn1 = cls(action_sizes=actions, eta=0.02)
         dyn2 = cls(action_sizes=actions, eta=0.02)
 

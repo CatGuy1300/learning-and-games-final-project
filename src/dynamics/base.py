@@ -12,7 +12,7 @@ class BaseLearningDynamic(ABC):
     def __init__(
         self,
         action_sizes: list[int],
-        eta: float = 0.01,
+        eta: float | None = None,
         device: torch.device = torch.device("cpu"),
         batch_size: int = 1,
     ) -> None:
@@ -22,8 +22,8 @@ class BaseLearningDynamic(ABC):
         ----------
         action_sizes : List[int]
             Tuple of action counts (A_1, ..., A_N).
-        eta : float
-            Learning rate step size.
+        eta : float | None
+            Learning rate step size. If None, it is automatically inferred.
         device : torch.device
             PyTorch device allocation.
         batch_size : int
