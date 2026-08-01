@@ -270,15 +270,20 @@ class ExperimentRunner:
             torch.set_rng_state(rng_state["torch"])
         logger.info(f"Resumed experiment '{self.config.name}' from step {self.start_step}")
 
-    def run(self) -> dict[str, Any]:
-        """Run simulation loop from current step to total_steps T.
+    def run(self, target_steps: int | None = None) -> dict[str, Any]:
+        """Run simulation loop from current step to target_steps.
+
+        Parameters
+        ----------
+        target_steps : int | None, optional
+            Step to run up to. If None, uses config.execution.total_steps.
 
         Returns
         -------
         Dict[str, Any]
             Final metrics summary dictionary.
         """
-        total_steps = self.config.execution.total_steps
+        total_steps = target_steps if target_steps is not None else self.config.execution.total_steps
         logger.info(
             f"Starting simulation '{self.config.name}' [Session: {self.session_id}] "
             f"on device '{self.device}' for T={total_steps} steps."
@@ -403,6 +408,9 @@ class ExperimentRunner:
             self.cumulative_utility_vectors, final_cum_actual_payoffs_list
         )
         final_avg_regrets = compute_average_regret(final_cum_regrets, total_steps)
+
+        # Update start_step so we can call run() multiple times sequentially
+        self.start_step = total_steps
 
         summary = {
             "session_id": self.session_id,

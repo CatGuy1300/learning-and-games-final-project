@@ -37,3 +37,32 @@ def test_cmaes_optimizer_smoke():
     assert best_payoffs[0].shape == (2, 2)
     assert best_payoffs[1].shape == (2, 2)
     assert isinstance(best_regret, float)
+
+def test_cmaes_optimizer_delta_reg():
+    B = 10
+    config = ExperimentConfig(
+        name="test_cmaes_delta",
+        game=GameConfig(
+            generator="custom",
+            utility_range=(-1.0, 1.0),
+            payoffs=[
+                [[0.0, 0.0], [0.0, 0.0]],
+                [[0.0, 0.0], [0.0, 0.0]],
+            ]
+        ),
+        dynamic=DynamicConfig(algorithm="omwu", eta=0.1),
+        execution=ExecutionConfig(total_steps=10, batch_size=B)
+    )
+
+    optimizer = CMAESGameOptimizer(
+        base_config=config, 
+        sigma=0.5, 
+        seed=42, 
+        objective_type="delta_reg",
+        T1_ratio=0.5,
+        lambda_reg=0.1
+    )
+    
+    best_payoffs, best_regret = optimizer.optimize(generations=2)
+    assert len(best_payoffs) == 2
+    assert isinstance(best_regret, float)

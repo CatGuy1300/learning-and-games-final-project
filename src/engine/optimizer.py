@@ -16,10 +16,21 @@ class CMAESGameOptimizer:
     of games simultaneously on the GPU.
     """
 
-    def __init__(self, base_config: ExperimentConfig, sigma: float = 0.5, seed: int = 42):
+    def __init__(
+        self,
+        base_config: ExperimentConfig,
+        sigma: float = 0.5,
+        seed: int = 42,
+        objective_type: str = "raw",
+        T1_ratio: float = 0.8,
+        lambda_reg: float = 0.1,
+    ):
         self.base_config = copy.deepcopy(base_config)
         self.sigma = sigma
         self.seed = seed
+        self.objective_type = objective_type
+        self.T1_ratio = T1_ratio
+        self.lambda_reg = lambda_reg
         np.random.seed(self.seed)
 
         # Determine shapes
@@ -85,29 +96,43 @@ class CMAESGameOptimizer:
         config.game.payoffs = batched_payoffs
 
         runner = ExperimentRunner(config)
-        metrics = runner.run()
-
-        # We want to MAXIMIZE regret. CMA-ES MINIMIZES.
-        # metrics["final_avg_regrets"] is (B, N). We take the sum across players.
-        # So fitness = -sum(regrets)
-
-        # Extract regret per batch element
-        # final_avg_regrets shape: [N] if B=1, but here B=population_size so it's [B, N]?
-        # Wait, compute_average_regret in runner.py:
-        # if B=1: returns [float, float]
-        # if B>1: returns [[float, float], [float, float], ...] where outer is players!
-        # Ah, let's verify runner.py's compute_average_regret format.
-
-        # Actually it's easier to just sum over players for each batch element.
-        regrets_by_player = metrics["final_avg_regrets"]
-        # regrets_by_player is List[List[float]] where len is N, and inner len is B.
-        # Let's sum across players:
+        T = config.execution.total_steps
         B = self.population_size
-        sum_regrets = np.zeros(B)
-        for i in range(self.num_players):
-            sum_regrets += np.array(regrets_by_player[i])
 
-        fitnesses = -sum_regrets  # Negative because CMA-ES minimizes
+        if self.objective_type == "delta_reg":
+            T1 = int(self.T1_ratio * T)
+            metrics_t1 = runner.run(target_steps=T1)
+            metrics_t = runner.run(target_steps=T)
+
+            regrets_t1_by_player = metrics_t1["final_cum_regrets"]
+            regrets_t_by_player = metrics_t["final_cum_regrets"]
+
+            sum_regrets_t1 = np.zeros(B)
+            sum_regrets_t = np.zeros(B)
+            avg_regrets_t = np.zeros(B)
+
+            for i in range(self.num_players):
+                sum_regrets_t1 += np.array(regrets_t1_by_player[i])
+                sum_regrets_t += np.array(regrets_t_by_player[i])
+                avg_regrets_t += np.array(metrics_t["final_avg_regrets"][i])
+
+            delta = sum_regrets_t - sum_regrets_t1
+            # Minimize negative fitness
+            fitnesses = -(delta + self.lambda_reg * np.log(np.maximum(sum_regrets_t, 0.0) + 1e-8))
+            report_regrets = avg_regrets_t
+
+        else:
+            metrics = runner.run(target_steps=T)
+            regrets_by_player = metrics["final_cum_regrets"]
+
+            sum_regrets = np.zeros(B)
+            avg_regrets_t = np.zeros(B)
+            for i in range(self.num_players):
+                sum_regrets += np.array(regrets_by_player[i])
+                avg_regrets_t += np.array(metrics["final_avg_regrets"][i])
+
+            fitnesses = -sum_regrets  # Negative because CMA-ES minimizes
+            report_regrets = avg_regrets_t
 
         # Tell
         solutions_with_fitness = [(solutions_flat[b], fitnesses[b]) for b in range(B)]
@@ -115,7 +140,7 @@ class CMAESGameOptimizer:
 
         # Best in this generation
         best_idx = np.argmin(fitnesses)
-        return solutions_flat[best_idx], sum_regrets[best_idx]
+        return solutions_flat[best_idx], report_regrets[best_idx]
 
     def optimize(self, generations: int = 50) -> tuple[list[torch.Tensor], float]:
         """Run CMA-ES for the specified number of generations.
