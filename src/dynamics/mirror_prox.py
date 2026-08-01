@@ -70,10 +70,10 @@ class MirrorProx(BaseLearningDynamic):
 
             # Max-center to prevent overflow
             max_val = self.logits_half.max(dim=-1, keepdim=True).values
-            self.logits_half = self.logits_half - max_val
+            self.logits_half.sub_(max_val)
 
-            # Handle masked actions using torch.where as requested
-            self.logits_half = torch.where(self.mask, self.logits_half, -float("inf"))
+            # Handle masked actions
+            self.logits_half.masked_fill_(~self.mask, -float("inf"))
 
             # Calculate half-step probabilities
             x_half = torch.softmax(self.logits_half, dim=-1)
@@ -82,17 +82,17 @@ class MirrorProx(BaseLearningDynamic):
             return x_half
         else:
             # Corrector step
-            self.stacked_logits = self.stacked_logits + self.eta * stacked_u_curr
+            self.stacked_logits.add_(stacked_u_curr, alpha=self.eta)
 
             # Max-center to prevent overflow
             max_val = self.stacked_logits.max(dim=-1, keepdim=True).values
-            self.stacked_logits = self.stacked_logits - max_val
+            self.stacked_logits.sub_(max_val)
 
-            # Handle masked actions using torch.where as requested
-            self.stacked_logits = torch.where(self.mask, self.stacked_logits, -float("inf"))
+            # Handle masked actions
+            self.stacked_logits.masked_fill_(~self.mask, -float("inf"))
 
             # Calculate full-step probabilities
-            self.stacked_strategies = torch.softmax(self.stacked_logits, dim=-1)
+            self.stacked_strategies.copy_(torch.softmax(self.stacked_logits, dim=-1))
 
             self.is_half_step = False
             return self.stacked_strategies
@@ -113,15 +113,20 @@ class MirrorProx(BaseLearningDynamic):
             cum_u_2d += u_curr
             cum_p_1d += (u_curr * self.stacked_strategies).sum(dim=-1)
 
-            # Step to get half-step probabilities
-            x_half = self.step_2d(u_curr)
+            # Step to get half-step probabilities, clone because it's a CUDAGraph output
+            x_half = self.step_2d(u_curr).clone()
+
+            if hasattr(torch, "compiler") and hasattr(torch.compiler, "cudagraph_mark_step_begin"):
+                torch.compiler.cudagraph_mark_step_begin()
 
             # 2. Corrector (is_half_step == True)
             # Evaluate utility at x_{t+1/2}
             u_half = game.get_stacked_utility_vectors(x_half)
 
-            # Step to get full-step probabilities x_{t+1}
-            self.step_2d(u_half)
+            # Step to get full-step probabilities x_{t+1}, clone to prevent overwrite
+            # Since self.stacked_strategies is updated in-place inside step_2d,
+            # we just clone the output here to avoid CUDAGraph cross-graph dependency issues.
+            self.stacked_strategies = self.step_2d(u_half).clone()
 
     def get_state(self) -> dict[str, Any]:
         """Serialize state dictionary."""
