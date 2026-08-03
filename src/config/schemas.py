@@ -83,7 +83,12 @@ class ExecutionConfig(BaseModel):
     seed: int = Field(default=42, description="Global random seed")
     compile: bool = Field(default=False, description="Enable torch.compile JIT graph fusion")
     fp32_precision: str = Field(
-        default="high", description="TensorFloat-32 precision on GPU ('high', 'highest')"
+        default="highest",
+        description="Float32 precision level: 'highest', 'high', or 'medium'."
+    )
+    quiet: bool = Field(
+        default=False,
+        description="If true, suppresses terminal progress bars and iteration logs."
     )
     steps_per_call: int = Field(
         default=1, ge=1, description="Number of unrolled dynamic steps per inner loop invocation"
@@ -91,6 +96,20 @@ class ExecutionConfig(BaseModel):
     batch_size: int = Field(
         default=1, ge=1, description="Number of independent games to simulate simultaneously"
     )
+
+
+class CMAESConfig(BaseModel):
+    """Configuration for CMA-ES game optimizer."""
+
+    sigma: float = Field(default=0.5, gt=0.0, description="Initial standard deviation for CMA-ES")
+    seed: int = Field(default=42, description="Random seed for CMA-ES optimization")
+    objective_type: str = Field(
+        default="delta_reg",
+        description="Objective function type ('delta_reg', 'raw')"
+    )
+    T1_ratio: float = Field(default=0.5, gt=0.0, lt=1.0, description="Ratio of total_steps to use for T1 in delta_reg objective")
+    lambda_reg: float = Field(default=1.0, ge=0.0, description="Regularization weight for delta_reg objective")
+    population_size: int | None = Field(default=None, ge=2, description="Population size for CMA-ES. If None, it is inferred.")
 
 
 class ExperimentConfig(BaseModel):
@@ -103,3 +122,4 @@ class ExperimentConfig(BaseModel):
     checkpoint: CheckpointConfig = Field(default_factory=CheckpointConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
+    cmaes: CMAESConfig = Field(default_factory=CMAESConfig)

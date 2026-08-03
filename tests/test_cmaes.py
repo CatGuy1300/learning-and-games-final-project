@@ -2,7 +2,7 @@ import pytest
 import torch
 import numpy as np
 
-from src.config.schemas import ExperimentConfig, GameConfig, DynamicConfig, ExecutionConfig
+from src.config.schemas import ExperimentConfig, GameConfig, DynamicConfig, ExecutionConfig, CMAESConfig
 from src.engine.optimizer import CMAESGameOptimizer
 
 def test_cmaes_optimizer_smoke():
@@ -19,10 +19,11 @@ def test_cmaes_optimizer_smoke():
             ]
         ),
         dynamic=DynamicConfig(algorithm="omwu", eta=0.1),
-        execution=ExecutionConfig(total_steps=10, batch_size=B)
+        execution=ExecutionConfig(total_steps=10, batch_size=B),
+        cmaes=CMAESConfig(sigma=0.5, seed=42)
     )
 
-    optimizer = CMAESGameOptimizer(base_config=config, sigma=0.5, seed=42)
+    optimizer = CMAESGameOptimizer(base_config=config)
     
     # Check dimensions
     assert optimizer.num_players == 2
@@ -51,17 +52,17 @@ def test_cmaes_optimizer_delta_reg():
             ]
         ),
         dynamic=DynamicConfig(algorithm="omwu", eta=0.1),
-        execution=ExecutionConfig(total_steps=10, batch_size=B)
+        execution=ExecutionConfig(total_steps=10, batch_size=B),
+        cmaes=CMAESConfig(
+            sigma=0.5, 
+            seed=42, 
+            objective_type="delta_reg",
+            T1_ratio=0.5,
+            lambda_reg=0.1
+        )
     )
 
-    optimizer = CMAESGameOptimizer(
-        base_config=config, 
-        sigma=0.5, 
-        seed=42, 
-        objective_type="delta_reg",
-        T1_ratio=0.5,
-        lambda_reg=0.1
-    )
+    optimizer = CMAESGameOptimizer(base_config=config)
     
     best_payoffs, best_regret = optimizer.optimize(generations=2)
     assert len(best_payoffs) == 2

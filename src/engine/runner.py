@@ -74,7 +74,7 @@ def instantiate_game(config: ExperimentConfig, device: torch.device) -> BaseGame
             else torch.tensor(p, dtype=torch.float32)
             for p in config.game.payoffs
         ]
-        if config.game.num_players == 2 and len(payoffs) == 2 and payoffs[0].dim() == 2:
+        if config.game.num_players == 2 and len(payoffs) == 2 and payoffs[0].dim() in [2, 3]:
             return MatrixGame(payoffs[0], payoffs[1], utility_range=u_range, device=device)
         return NPlayerGame(payoffs, utility_range=u_range, device=device)
     else:
@@ -159,9 +159,10 @@ class ExperimentRunner:
                     if (sys.platform == "win32" and self.device.type == "cuda")
                     else "inductor"
                 )
-                logger.info(
-                    f"Enabling PyTorch JIT compilation via torch.compile(backend='{backend}')..."
-                )
+                if not config.execution.quiet:
+                    logger.info(
+                        f"Enabling PyTorch JIT compilation via torch.compile(backend='{backend}')..."
+                    )
                 self.dynamic.step_2d = torch.compile(self.dynamic.step_2d, backend=backend)
                 # Ensure torch.no_grad() is used or mark step begins to satisfy cudagraphs fast path
                 self.game.get_stacked_utility_vectors = torch.compile(
@@ -290,36 +291,28 @@ class ExperimentRunner:
             Final metrics summary dictionary.
         """
         total_steps = target_steps if target_steps is not None else self.config.execution.total_steps
-        logger.info(
-            f"Starting simulation '{self.config.name}' [Session: {self.session_id}] "
-            f"on device '{self.device}' for T={total_steps} steps."
-        )
+        if not self.config.execution.quiet:
+            logger.info(
+                f"Starting simulation '{self.config.name}' [Session: {self.session_id}] "
+                f"on device '{self.device}' for T={total_steps} steps."
+            )
 
         steps_per_call = max(1, self.config.execution.steps_per_call)
         step = self.start_step
 
-        with Progress(
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            MofNCompleteColumn(),
-            TaskProgressColumn(),
-            TimeElapsedColumn(),
-            TextColumn("<"),
-            TimeRemainingColumn(),
-            TextColumn("{task.fields[postfix]}"),
-            console=console,
-            refresh_per_second=10,
-        ) as progress:
-            task_id = progress.add_task(
-                f"Running {self.config.dynamic.algorithm.upper()}",
-                total=total_steps,
-                completed=self.start_step,
-                postfix="",
-            )
+        if self.config.execution.quiet:
+            # Silent loop
             while step < total_steps:
                 target_step = min(step + steps_per_call, total_steps)
+                
+                # Check if we need to checkpoint inside this unrolled block
+                last_ckpt = getattr(self, "last_ckpt", 0)
+                if self.config.checkpoint.enabled:
+                    if target_step > last_ckpt and target_step % self.config.checkpoint.save_interval == 0:
+                        target_step = (last_ckpt // self.config.checkpoint.save_interval + 1) * self.config.checkpoint.save_interval
+                
                 k_steps = target_step - step
-
+                
                 with torch.no_grad():
                     self.dynamic.step_unrolled_block(
                         game=self.game,
@@ -327,82 +320,131 @@ class ExperimentRunner:
                         cum_p_1d=self.cumulative_actual_payoffs,
                         k_steps=k_steps,
                     )
+                
                 step += k_steps
-
-                progress.update(task_id, advance=k_steps)
-
-                # Heavy metrics, logging, stats buffering, and checkpointing at configured intervals
-                is_sample_step = step % self.config.logging.sample_interval == 0
-                is_log_step = step % self.config.logging.log_interval == 0
-                is_flush_step = step % self.config.logging.save_stats_interval == 0
-                is_ckpt_step = self.config.checkpoint.enabled and (
-                    step % self.config.checkpoint.save_interval == 0
-                )
-
-                if is_sample_step or is_log_step or is_ckpt_step or (step == total_steps):
-                    curr_strats = self.dynamic.strategies
-                    u_vecs = self.game.get_utility_vectors(curr_strats)
-                    cum_actual_payoffs_list = self.cumulative_actual_payoffs.T.tolist()
-                    if self.config.execution.batch_size == 1:
-                        cum_actual_payoffs_list = [l[0] for l in cum_actual_payoffs_list]
-                    expected_payoffs = [
-                        torch.sum(u_vecs[i] * curr_strats[i], dim=-1).tolist()
-                        if self.config.execution.batch_size > 1
-                        else torch.dot(u_vecs[i], curr_strats[i]).item()
-                        for i in range(self.game.num_players)
-                    ]
-                    br_payoffs = self.game.best_response_payoffs(curr_strats)
-                    instant_regrets, _ = compute_step_metrics(expected_payoffs, br_payoffs)
-                    cum_regrets = compute_cumulative_regret(
-                        self.cumulative_utility_vectors, cum_actual_payoffs_list
+                
+                is_ckpt_step = self.config.checkpoint.enabled and step % self.config.checkpoint.save_interval == 0
+                if is_ckpt_step and step > getattr(self, "last_ckpt", 0):
+                    rng_state = {
+                        "python": random.getstate(),
+                        "numpy": np.random.get_state(),
+                        "torch": torch.get_rng_state(),
+                    }
+                    self.checkpoint_manager.save(
+                        step=step,
+                        config_dict=self.config.model_dump(),
+                        dynamic_state=self.dynamic.get_state(),
+                        rng_state=rng_state,
+                        cumulative_utility_vectors=self.cumulative_utility_vectors,
+                        cumulative_actual_payoffs=self.cumulative_actual_payoffs,
                     )
-                    avg_regrets = compute_average_regret(cum_regrets, step)
+                    self.last_ckpt = step
+        else:
+            with Progress(
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                MofNCompleteColumn(),
+                TaskProgressColumn(),
+                TimeElapsedColumn(),
+                TextColumn("<"),
+                TimeRemainingColumn(),
+                TextColumn("{task.fields[postfix]}"),
+                console=console,
+                refresh_per_second=10,
+            ) as progress:
+                task_id = progress.add_task(
+                    f"Running {self.config.dynamic.algorithm.upper()}",
+                    total=total_steps,
+                    completed=self.start_step,
+                    postfix="",
+                )
+                while step < total_steps:
+                    target_step = min(step + steps_per_call, total_steps)
+                    k_steps = target_step - step
 
-                    if is_sample_step or (step == total_steps):
-                        self.stats_collector.record_step(
-                            step=step,
-                            strategies=curr_strats,
-                            expected_payoffs=expected_payoffs,
-                            instant_regrets=instant_regrets,
-                            cum_regrets=cum_regrets,
+                    with torch.no_grad():
+                        self.dynamic.step_unrolled_block(
+                            game=self.game,
+                            cum_u_2d=self.stacked_cumulative_utility_vectors,
+                            cum_p_1d=self.cumulative_actual_payoffs,
+                            k_steps=k_steps,
                         )
+                    step += k_steps
 
-                    if is_flush_step or (step == total_steps):
-                        self.stats_collector.flush_to_disk()
+                    progress.update(task_id, advance=k_steps)
 
-                    if is_log_step:
-                        flat_cum = [
-                            item
-                            for sublist in cum_regrets
-                            for item in (sublist if isinstance(sublist, list) else [sublist])
+                    # Heavy metrics, logging, stats buffering, and checkpointing at configured intervals
+                    is_sample_step = step % self.config.logging.sample_interval == 0
+                    is_log_step = step % self.config.logging.log_interval == 0
+                    is_flush_step = step % self.config.logging.save_stats_interval == 0
+                    is_ckpt_step = self.config.checkpoint.enabled and (
+                        step % self.config.checkpoint.save_interval == 0
+                    )
+
+                    if is_sample_step or is_log_step or is_ckpt_step or (step == total_steps):
+                        curr_strats = self.dynamic.strategies
+                        u_vecs = self.game.get_utility_vectors(curr_strats)
+                        cum_actual_payoffs_list = self.cumulative_actual_payoffs.T.tolist()
+                        if self.config.execution.batch_size == 1:
+                            cum_actual_payoffs_list = [l[0] for l in cum_actual_payoffs_list]
+                        expected_payoffs = [
+                            torch.sum(u_vecs[i] * curr_strats[i], dim=-1).tolist()
+                            if self.config.execution.batch_size > 1
+                            else torch.dot(u_vecs[i], curr_strats[i]).item()
+                            for i in range(self.game.num_players)
                         ]
-                        flat_avg = [
-                            item
-                            for sublist in avg_regrets
-                            for item in (sublist if isinstance(sublist, list) else [sublist])
-                        ]
-                        postfix = (
-                            f"max_cum_regret={max(flat_cum):.4f} max_avg_regret={max(flat_avg):.4f}"
+                        br_payoffs = self.game.best_response_payoffs(curr_strats)
+                        instant_regrets, _ = compute_step_metrics(expected_payoffs, br_payoffs)
+                        cum_regrets = compute_cumulative_regret(
+                            self.cumulative_utility_vectors, cum_actual_payoffs_list
                         )
-                        if getattr(self, "last_ckpt", None) is not None:
-                            postfix += f" | ckpt={self.last_ckpt}"
-                        progress.update(task_id, postfix=postfix)
+                        avg_regrets = compute_average_regret(cum_regrets, step)
 
-                    if is_ckpt_step:
-                        rng_state = {
-                            "python": random.getstate(),
-                            "numpy": np.random.get_state(),
-                            "torch": torch.get_rng_state(),
-                        }
-                        self.checkpoint_manager.save(
-                            step=step,
-                            config_dict=self.config.model_dump(),
-                            dynamic_state=self.dynamic.get_state(),
-                            rng_state=rng_state,
-                            cumulative_utility_vectors=self.cumulative_utility_vectors,
-                            cumulative_actual_payoffs=self.cumulative_actual_payoffs,
-                        )
-                        self.last_ckpt = step
+                        if is_sample_step or (step == total_steps):
+                            self.stats_collector.record_step(
+                                step=step,
+                                strategies=curr_strats,
+                                expected_payoffs=expected_payoffs,
+                                instant_regrets=instant_regrets,
+                                cum_regrets=cum_regrets,
+                            )
+
+                        if is_flush_step or (step == total_steps):
+                            self.stats_collector.flush_to_disk()
+
+                        if is_log_step:
+                            flat_cum = [
+                                item
+                                for sublist in cum_regrets
+                                for item in (sublist if isinstance(sublist, list) else [sublist])
+                            ]
+                            flat_avg = [
+                                item
+                                for sublist in avg_regrets
+                                for item in (sublist if isinstance(sublist, list) else [sublist])
+                            ]
+                            postfix = (
+                                f"max_cum_regret={max(flat_cum):.4f} max_avg_regret={max(flat_avg):.4f}"
+                            )
+                            if getattr(self, "last_ckpt", None) is not None:
+                                postfix += f" | ckpt={self.last_ckpt}"
+                            progress.update(task_id, postfix=postfix)
+
+                        if is_ckpt_step:
+                            rng_state = {
+                                "python": random.getstate(),
+                                "numpy": np.random.get_state(),
+                                "torch": torch.get_rng_state(),
+                            }
+                            self.checkpoint_manager.save(
+                                step=step,
+                                config_dict=self.config.model_dump(),
+                                dynamic_state=self.dynamic.get_state(),
+                                rng_state=rng_state,
+                                cumulative_utility_vectors=self.cumulative_utility_vectors,
+                                cumulative_actual_payoffs=self.cumulative_actual_payoffs,
+                            )
+                            self.last_ckpt = step
 
         # Final flush & summary
         last_chunk_path = self.stats_collector.flush_to_disk()
@@ -433,8 +475,9 @@ class ExperimentRunner:
             for sublist in final_avg_regrets
             for item in (sublist if isinstance(sublist, list) else [sublist])
         ]
-        logger.info(
-            f"Simulation completed cleanly! Final Max Avg Regret: {max(flat_final_avg):.6f}. "
-            f"Stats session ID '{self.session_id}' in '{self.config.logging.output_dir}'"
-        )
+        if not self.config.execution.quiet:
+            logger.info(
+                f"Simulation completed cleanly! Final Max Avg Regret: {max(flat_final_avg):.6f}. "
+                f"Stats session ID '{self.session_id}' in '{self.config.logging.output_dir}'"
+            )
         return summary

@@ -1,14 +1,12 @@
 """Multiplicative Weights Update (MWU / Hedge) learning dynamic baseline."""
 
+import math
 from typing import Any
 
 import torch
 from torch.nn.utils.rnn import pad_sequence
 
 from src.dynamics.base import BaseLearningDynamic
-
-
-import math
 from src.utils.logging import setup_logger
 
 logger = setup_logger("mwu")

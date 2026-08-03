@@ -19,18 +19,13 @@ class CMAESGameOptimizer:
     def __init__(
         self,
         base_config: ExperimentConfig,
-        sigma: float = 0.5,
-        seed: int = 42,
-        objective_type: str = "raw",
-        T1_ratio: float = 0.8,
-        lambda_reg: float = 0.1,
     ):
         self.base_config = copy.deepcopy(base_config)
-        self.sigma = sigma
-        self.seed = seed
-        self.objective_type = objective_type
-        self.T1_ratio = T1_ratio
-        self.lambda_reg = lambda_reg
+        self.sigma = self.base_config.cmaes.sigma
+        self.seed = self.base_config.cmaes.seed
+        self.objective_type = self.base_config.cmaes.objective_type
+        self.T1_ratio = self.base_config.cmaes.T1_ratio
+        self.lambda_reg = self.base_config.cmaes.lambda_reg
         np.random.seed(self.seed)
 
         # Determine shapes
@@ -54,6 +49,7 @@ class CMAESGameOptimizer:
         # Override config batch_size to match CMA population size
         self.population_size = self.optimizer.population_size
         self.base_config.execution.batch_size = self.population_size
+        self.base_config.execution.quiet = True
 
     def _unflatten_payoffs(self, flat_batch: np.ndarray) -> list[torch.Tensor]:
         """Convert a (population_size, dim) numpy array into a list of batched payoff tensors."""
@@ -107,32 +103,22 @@ class CMAESGameOptimizer:
             regrets_t1_by_player = metrics_t1["final_cum_regrets"]
             regrets_t_by_player = metrics_t["final_cum_regrets"]
 
-            sum_regrets_t1 = np.zeros(B)
-            sum_regrets_t = np.zeros(B)
-            avg_regrets_t = np.zeros(B)
+            p1_regrets_t1 = np.array(regrets_t1_by_player[0])
+            p1_regrets_t = np.array(regrets_t_by_player[0])
 
-            for i in range(self.num_players):
-                sum_regrets_t1 += np.array(regrets_t1_by_player[i])
-                sum_regrets_t += np.array(regrets_t_by_player[i])
-                avg_regrets_t += np.array(metrics_t["final_avg_regrets"][i])
-
-            delta = sum_regrets_t - sum_regrets_t1
+            delta = p1_regrets_t - p1_regrets_t1
             # Minimize negative fitness
-            fitnesses = -(delta + self.lambda_reg * np.log(np.maximum(sum_regrets_t, 0.0) + 1e-8))
-            report_regrets = avg_regrets_t
+            fitnesses = -(delta + self.lambda_reg * np.log(np.maximum(p1_regrets_t, 0.0) + 1e-8))
+            report_regrets = p1_regrets_t
 
         else:
             metrics = runner.run(target_steps=T)
             regrets_by_player = metrics["final_cum_regrets"]
 
-            sum_regrets = np.zeros(B)
-            avg_regrets_t = np.zeros(B)
-            for i in range(self.num_players):
-                sum_regrets += np.array(regrets_by_player[i])
-                avg_regrets_t += np.array(metrics["final_avg_regrets"][i])
+            p1_regrets = np.array(regrets_by_player[0])
 
-            fitnesses = -sum_regrets  # Negative because CMA-ES minimizes
-            report_regrets = avg_regrets_t
+            fitnesses = -p1_regrets  # Negative because CMA-ES minimizes
+            report_regrets = p1_regrets
 
         # Tell
         solutions_with_fitness = [(solutions_flat[b], fitnesses[b]) for b in range(B)]
@@ -150,14 +136,34 @@ class CMAESGameOptimizer:
         Tuple[List[torch.Tensor], float]
             The best payoff matrices found and their regret sum.
         """
+        from rich.progress import BarColumn, Progress, TextColumn, TimeRemainingColumn
+
         best_solution = None
         best_regret = -float("inf")
 
-        for g in range(generations):
-            sol, regret = self.step()
-            if regret > best_regret:
-                best_regret = regret
-                best_solution = sol
+        with Progress(
+            TextColumn("[bold blue]CMA-ES Optimization"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TextColumn("•"),
+            TextColumn("Best Regret: {task.fields[best_regret]:.4f}"),
+            TimeRemainingColumn(),
+        ) as progress:
+            task = progress.add_task("Optimizing...", total=generations, best_regret=0.0)
+
+            for g in range(generations):
+                sol, regret = self.step()
+                if regret > best_regret:
+                    best_regret = regret
+                    best_solution = sol
+                
+                progress.update(task, advance=1, best_regret=best_regret)
+
+                # Native CMA-ES early stopping
+                if self.optimizer.should_stop():
+                    progress.console.print(f"[yellow]Early stopping triggered by CMA-ES native criteria at generation {g+1}.[/yellow]")
+                    progress.update(task, completed=generations)
+                    break
 
         # Return unflattened batched tensor but index 0 to make it unbatched
         batched_best = self._unflatten_payoffs(np.array([best_solution]))

@@ -2,7 +2,7 @@
 
 import torch
 
-from src.config.schemas import ExperimentConfig, GameConfig
+from src.config.schemas import CMAESConfig, ExperimentConfig, GameConfig
 
 
 def validate_game_config(config: GameConfig) -> None:
@@ -120,6 +120,15 @@ def clamp_utility_matrices(
     return [torch.clamp(p, min=u_min, max=u_max) for p in payoffs]
 
 
+def validate_cmaes_config(config: CMAESConfig) -> None:
+    if config.objective_type not in ["delta_reg", "raw"]:
+        raise ValueError(f"objective_type must be 'delta_reg' or 'raw', got {config.objective_type}")
+    if config.T1_ratio <= 0.0 or config.T1_ratio >= 1.0:
+        raise ValueError(f"T1_ratio must be in (0, 1), got {config.T1_ratio}")
+    if config.sigma <= 0.0:
+        raise ValueError(f"sigma must be > 0, got {config.sigma}")
+
+
 def validate_experiment_config(config: ExperimentConfig) -> None:
     """Validate master experiment configuration."""
     validate_game_config(config.game)
@@ -127,3 +136,4 @@ def validate_experiment_config(config: ExperimentConfig) -> None:
         raise ValueError(f"total_steps must be >= 1, got {config.execution.total_steps}")
     if config.dynamic.eta is not None and config.dynamic.eta <= 0:
         raise ValueError(f"eta must be > 0, got {config.dynamic.eta}")
+    validate_cmaes_config(config.cmaes)
