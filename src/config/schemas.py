@@ -86,6 +86,10 @@ class ExecutionConfig(BaseModel):
         default="highest",
         description="Float32 precision level: 'highest', 'high', or 'medium'."
     )
+    dtype: str = Field(
+        default="float32",
+        description="PyTorch tensor float precision ('float32', 'float64')"
+    )
     quiet: bool = Field(
         default=False,
         description="If true, suppresses terminal progress bars and iteration logs."

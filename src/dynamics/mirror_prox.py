@@ -44,11 +44,11 @@ class MirrorProx(BaseLearningDynamic):
         """Reset strategies and logits."""
         if initial_strategies is not None:
             self.strategies = [
-                s.clone().to(device=self.device, dtype=torch.float32) for s in initial_strategies
+                s.clone().to(device=self.device, dtype=torch.get_default_dtype()) for s in initial_strategies
             ]
         else:
             self.strategies = [
-                torch.full((a,), 1.0 / a, device=self.device, dtype=torch.float32)
+                torch.full((a,), 1.0 / a, device=self.device, dtype=torch.get_default_dtype())
                 for a in self.action_sizes
             ]
 
@@ -59,7 +59,7 @@ class MirrorProx(BaseLearningDynamic):
 
     def step(self, utility_vectors: list[torch.Tensor]) -> list[torch.Tensor]:
         """Update strategies using 2D batched MirrorProx rule."""
-        u_tensors = [u.to(device=self.device, dtype=torch.float32) for u in utility_vectors]
+        u_tensors = [u.to(device=self.device, dtype=torch.get_default_dtype()) for u in utility_vectors]
         stacked_u_curr = pad_sequence(u_tensors, batch_first=True, padding_value=0.0)
 
         if stacked_u_curr.shape[1] < self.max_action_size:

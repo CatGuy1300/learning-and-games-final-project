@@ -46,7 +46,7 @@ def create_matching_pennies(
     """
     u_min, u_max = utility_range
     val = min(abs(u_min), abs(u_max))
-    payoff_a = torch.tensor([[val, -val], [-val, val]], dtype=torch.float32)
+    payoff_a = torch.tensor([[val, -val], [-val, val]], dtype=torch.get_default_dtype())
     payoff_b = -payoff_a
     return MatrixGame(payoff_a, payoff_b, utility_range=utility_range, device=device)
 
@@ -60,8 +60,8 @@ def create_prisoners_dilemma(
     P1 Payoff A: [[-1, -3], [ 0, -2]]
     P2 Payoff B: [[-1,  0], [-3, -2]]
     """
-    raw_a = torch.tensor([[-1.0, -3.0], [0.0, -2.0]], dtype=torch.float32)
-    raw_b = torch.tensor([[-1.0, 0.0], [-3.0, -2.0]], dtype=torch.float32)
+    raw_a = torch.tensor([[-1.0, -3.0], [0.0, -2.0]], dtype=torch.get_default_dtype())
+    raw_b = torch.tensor([[-1.0, 0.0], [-3.0, -2.0]], dtype=torch.get_default_dtype())
 
     payoff_a = scale_tensor_to_range(raw_a, utility_range)
     payoff_b = scale_tensor_to_range(raw_b, utility_range)
@@ -73,7 +73,7 @@ def create_rock_paper_scissors(
 ) -> MatrixGame:
     """Create zero-sum Rock-Paper-Scissors matrix game."""
     raw_a = torch.tensor(
-        [[0.0, -1.0, 1.0], [1.0, 0.0, -1.0], [-1.0, 1.0, 0.0]], dtype=torch.float32
+        [[0.0, -1.0, 1.0], [1.0, 0.0, -1.0], [-1.0, 1.0, 0.0]], dtype=torch.get_default_dtype()
     )
     raw_b = -raw_a
 
@@ -86,8 +86,8 @@ def create_shapley_game(
     utility_range: tuple[float, float] = (-1.0, 1.0), device: torch.device = torch.device("cpu")
 ) -> MatrixGame:
     """Create Shapley non-zero sum game with cyclic best-response trajectory."""
-    raw_a = torch.tensor([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=torch.float32)
-    raw_b = torch.tensor([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]], dtype=torch.float32)
+    raw_a = torch.tensor([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=torch.get_default_dtype())
+    raw_b = torch.tensor([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]], dtype=torch.get_default_dtype())
 
     payoff_a = scale_tensor_to_range(raw_a, utility_range)
     payoff_b = scale_tensor_to_range(raw_b, utility_range)
@@ -135,7 +135,7 @@ def create_random_game(
 
     payoffs: list[torch.Tensor] = []
     for _ in range(num_players):
-        raw = torch.rand(shape, generator=gen, dtype=torch.float32)
+        raw = torch.rand(shape, generator=gen, dtype=torch.get_default_dtype())
         scaled = u_min + raw * (u_max - u_min)
         payoffs.append(scaled)
 

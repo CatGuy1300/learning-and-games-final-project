@@ -47,12 +47,12 @@ class BaseLearningDynamic(ABC):
         self.stacked_strategies = torch.zeros(
             (self.batch_size, self.num_players, self.max_action_size),
             device=self.device,
-            dtype=torch.float32,
+            dtype=torch.get_default_dtype(),
         )
 
         # Pre-cached index tensor (1, 1, max_action_size) for zero-allocation simplex projections
         self.ind = torch.arange(
-            1, self.max_action_size + 1, device=self.device, dtype=torch.float32
+            1, self.max_action_size + 1, device=self.device, dtype=torch.get_default_dtype()
         ).view(1, 1, self.max_action_size)
 
     @property

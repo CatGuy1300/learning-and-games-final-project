@@ -53,3 +53,16 @@ def enable_gpu_optimizations(device: torch.device, fp32_precision: str = "high")
             torch.backends.cudnn.benchmark = True
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
+
+def setup_dtype(dtype_str: str = "float32") -> None:
+    """Set the global default PyTorch float precision.
+
+    Parameters
+    ----------
+    dtype_str : str
+        Target precision ('float32' or 'float64').
+    """
+    if dtype_str.lower() == "float64":
+        torch.set_default_dtype(torch.float64)
+    else:
+        torch.set_default_dtype(torch.float32)

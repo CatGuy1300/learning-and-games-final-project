@@ -60,7 +60,7 @@ class CMAESGameOptimizer:
             size = np.prod(shape)
             # Slice out this player's parameters and reshape to (B, *shape)
             p_flat = flat_batch[:, offset : offset + size]
-            p_tensor = torch.tensor(p_flat, dtype=torch.float32).reshape(B, *shape)
+            p_tensor = torch.tensor(p_flat, dtype=torch.get_default_dtype()).reshape(B, *shape)
 
             # Clip payoffs to utility_range if specified
             if self.base_config.game.utility_range is not None:

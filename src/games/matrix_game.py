@@ -48,8 +48,8 @@ class MatrixGame(BaseGame):
             device=device,
         )
 
-        self.payoff_a = payoff_a.to(device=device, dtype=torch.float32)
-        self.payoff_b = payoff_b.to(device=device, dtype=torch.float32)
+        self.payoff_a = payoff_a.to(device=device, dtype=torch.get_default_dtype())
+        self.payoff_b = payoff_b.to(device=device, dtype=torch.get_default_dtype())
         self.is_square = m == n
         if self.is_square:
             # stack dimension depends on whether batched (B, 2, m, n) or (2, m, n)
@@ -64,8 +64,8 @@ class MatrixGame(BaseGame):
 
     def get_utility_vectors(self, strategies: list[torch.Tensor]) -> list[torch.Tensor]:
         validate_strategies(strategies, self.action_sizes)
-        x = strategies[0].to(device=self.device, dtype=torch.float32)
-        y = strategies[1].to(device=self.device, dtype=torch.float32)
+        x = strategies[0].to(device=self.device, dtype=torch.get_default_dtype())
+        y = strategies[1].to(device=self.device, dtype=torch.get_default_dtype())
 
         y_ = y.unsqueeze(-1) if y.dim() == 2 else y
         x_ = x.unsqueeze(-1) if x.dim() == 2 else x
@@ -128,8 +128,8 @@ class MatrixGame(BaseGame):
     def get_expected_payoffs(self, strategies: list[torch.Tensor]) -> list[float]:
         """Compute x^T A y and x^T B y."""
         u_vecs = self.get_utility_vectors(strategies)
-        x = strategies[0].to(device=self.device, dtype=torch.float32)
-        y = strategies[1].to(device=self.device, dtype=torch.float32)
+        x = strategies[0].to(device=self.device, dtype=torch.get_default_dtype())
+        y = strategies[1].to(device=self.device, dtype=torch.get_default_dtype())
 
         payoff1 = (
             torch.sum(x * u_vecs[0], dim=-1).tolist()

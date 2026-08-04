@@ -46,7 +46,7 @@ class NPlayerGame(BaseGame):
             device=device,
         )
 
-        self.payoffs = [p.to(device=device, dtype=torch.float32) for p in payoffs]
+        self.payoffs = [p.to(device=device, dtype=torch.get_default_dtype()) for p in payoffs]
 
         # Pre-cache einsum string equations for fast 2D utility contractions
         indices = _LETTERS[: self.num_players]
@@ -89,7 +89,7 @@ class NPlayerGame(BaseGame):
                 einsum_str = self._einsum_strs[i]
 
             other_strats = [
-                strategies[j].to(device=self.device, dtype=torch.float32)
+                strategies[j].to(device=self.device, dtype=torch.get_default_dtype())
                 for j in range(self.num_players)
                 if j != i
             ]
@@ -226,7 +226,7 @@ class BatchNPlayerGame:
         self.action_sizes = list(batch_payoffs[0].shape[1:])
         self.utility_range = utility_range
         self.device = device
-        self.payoffs = [p.to(device=device, dtype=torch.float32) for p in batch_payoffs]
+        self.payoffs = [p.to(device=device, dtype=torch.get_default_dtype()) for p in batch_payoffs]
 
     def get_utility_vectors(self, batch_strategies: list[torch.Tensor]) -> list[torch.Tensor]:
         """Compute expected utility vectors for B parallel game instances in one GPU einsum pass.
@@ -251,7 +251,7 @@ class BatchNPlayerGame:
             einsum_str = f"z{indices}{''.join(operand_indices)}->z{target_letter}"
 
             other_strats = [
-                batch_strategies[j].to(device=self.device, dtype=torch.float32)
+                batch_strategies[j].to(device=self.device, dtype=torch.get_default_dtype())
                 for j in range(self.num_players)
                 if j != i
             ]

@@ -39,7 +39,7 @@ from src.metrics.regret import (
     compute_cumulative_regret,
     compute_step_metrics,
 )
-from src.utils.device import enable_gpu_optimizations, get_device
+from src.utils.device import enable_gpu_optimizations, get_device, setup_dtype
 from src.utils.logging import console, setup_logger
 from src.utils.reproducibility import set_seed
 
@@ -69,9 +69,9 @@ def instantiate_game(config: ExperimentConfig, device: torch.device) -> BaseGame
         )
     elif config.game.payoffs is not None:
         payoffs = [
-            p.clone().detach().to(dtype=torch.float32)
+            p.clone().detach().to(dtype=torch.get_default_dtype())
             if isinstance(p, torch.Tensor)
-            else torch.tensor(p, dtype=torch.float32)
+            else torch.tensor(p, dtype=torch.get_default_dtype())
             for p in config.game.payoffs
         ]
         if config.game.num_players == 2 and len(payoffs) == 2 and payoffs[0].dim() in [2, 3]:
@@ -138,6 +138,7 @@ class ExperimentRunner:
         """
         validate_experiment_config(config)
         self.config = config
+        setup_dtype(config.execution.dtype)
         self.device = get_device(config.execution.device)
         enable_gpu_optimizations(self.device, fp32_precision=config.execution.fp32_precision)
         set_seed(config.execution.seed)
@@ -179,11 +180,11 @@ class ExperimentRunner:
         if strat_mode == "random":
             initial_strats = []
             for a_size in self.game.action_sizes:
-                r = torch.rand(a_size, device=self.device, dtype=torch.float32)
+                r = torch.rand(a_size, device=self.device, dtype=torch.get_default_dtype())
                 initial_strats.append(r / r.sum())
         elif strat_mode == "custom" and config.dynamic.custom_initial_strategies:
             initial_strats = [
-                torch.tensor(s, device=self.device, dtype=torch.float32)
+                torch.tensor(s, device=self.device, dtype=torch.get_default_dtype())
                 for s in config.dynamic.custom_initial_strategies
             ]
 
@@ -206,25 +207,25 @@ class ExperimentRunner:
         self.stacked_cumulative_utility_vectors = torch.zeros(
             (self.config.execution.batch_size, self.game.num_players, self.max_action_size),
             device=self.device,
-            dtype=torch.float32,
+            dtype=torch.get_default_dtype(),
         )
         self.cumulative_actual_payoffs = torch.zeros(
             (self.config.execution.batch_size, self.game.num_players),
             device=self.device,
-            dtype=torch.float32,
+            dtype=torch.get_default_dtype(),
         )
 
         # Pre-allocate GPU history tensors for the unrolled block
         self.hist_strats = torch.zeros(
             (self.config.execution.steps_per_call, self.config.execution.batch_size, self.game.num_players, self.max_action_size),
-            device=self.device, dtype=torch.float32
+            device=self.device, dtype=torch.get_default_dtype()
         )
         self.hist_logits = torch.zeros_like(self.hist_strats)
         self.hist_stacked_u = torch.zeros_like(self.hist_strats)
         self.hist_cum_u = torch.zeros_like(self.hist_strats)
         self.hist_cum_p = torch.zeros(
             (self.config.execution.steps_per_call, self.config.execution.batch_size, self.game.num_players),
-            device=self.device, dtype=torch.float32
+            device=self.device, dtype=torch.get_default_dtype()
         )
 
         if resume_checkpoint_path:
@@ -267,7 +268,7 @@ class ExperimentRunner:
         if "cumulative_actual_payoffs" in data:
             if isinstance(data["cumulative_actual_payoffs"], list):
                 loaded_tensor = torch.tensor(
-                    data["cumulative_actual_payoffs"], device=self.device, dtype=torch.float32
+                    data["cumulative_actual_payoffs"], device=self.device, dtype=torch.get_default_dtype()
                 )
                 if loaded_tensor.dim() == 1:
                     if self.config.execution.batch_size == 1:
