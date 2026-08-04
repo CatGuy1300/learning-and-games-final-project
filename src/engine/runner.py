@@ -214,6 +214,19 @@ class ExperimentRunner:
             dtype=torch.float32,
         )
 
+        # Pre-allocate GPU history tensors for the unrolled block
+        self.hist_strats = torch.zeros(
+            (self.config.execution.steps_per_call, self.config.execution.batch_size, self.game.num_players, self.max_action_size),
+            device=self.device, dtype=torch.float32
+        )
+        self.hist_logits = torch.zeros_like(self.hist_strats)
+        self.hist_stacked_u = torch.zeros_like(self.hist_strats)
+        self.hist_cum_u = torch.zeros_like(self.hist_strats)
+        self.hist_cum_p = torch.zeros(
+            (self.config.execution.steps_per_call, self.config.execution.batch_size, self.game.num_players),
+            device=self.device, dtype=torch.float32
+        )
+
         if resume_checkpoint_path:
             self._resume_from_checkpoint(resume_checkpoint_path)
 
@@ -368,67 +381,70 @@ class ExperimentRunner:
                             cum_u_2d=self.stacked_cumulative_utility_vectors,
                             cum_p_1d=self.cumulative_actual_payoffs,
                             k_steps=k_steps,
+                            hist_strats=self.hist_strats,
+                            hist_logits=self.hist_logits,
+                            hist_stacked_u=self.hist_stacked_u,
+                            hist_cum_u=self.hist_cum_u,
+                            hist_cum_p=self.hist_cum_p,
                         )
                     step += k_steps
 
                     progress.update(task_id, advance=k_steps)
 
                     # Heavy metrics, logging, stats buffering, and checkpointing at configured intervals
-                    is_sample_step = step % self.config.logging.sample_interval == 0
                     is_log_step = step % self.config.logging.log_interval == 0
                     is_flush_step = step % self.config.logging.save_stats_interval == 0
                     is_ckpt_step = self.config.checkpoint.enabled and (
                         step % self.config.checkpoint.save_interval == 0
                     )
 
-                    if is_sample_step or is_log_step or is_ckpt_step or (step == total_steps):
-                        curr_strats = self.dynamic.strategies
-                        u_vecs = self.game.get_utility_vectors(curr_strats)
-                        cum_actual_payoffs_list = self.cumulative_actual_payoffs.T.tolist()
-                        if self.config.execution.batch_size == 1:
-                            cum_actual_payoffs_list = [l[0] for l in cum_actual_payoffs_list]
-                        expected_payoffs = [
-                            torch.sum(u_vecs[i] * curr_strats[i], dim=-1).tolist()
-                            if self.config.execution.batch_size > 1
-                            else torch.dot(u_vecs[i], curr_strats[i]).item()
-                            for i in range(self.game.num_players)
-                        ]
-                        br_payoffs = self.game.best_response_payoffs(curr_strats)
-                        instant_regrets, _ = compute_step_metrics(expected_payoffs, br_payoffs)
-                        cum_regrets = compute_cumulative_regret(
-                            self.cumulative_utility_vectors, cum_actual_payoffs_list
+                    # Pull history batch to CPU and slice by sample_interval
+                    s_int = self.config.logging.sample_interval
+                    
+                    # We start recording from (step - k_steps + 1)
+                    # We want to record steps that are multiples of sample_interval
+                    # So we find the indices in [0, k_steps-1] where (start_step + idx) % s_int == 0
+                    start_step = step - k_steps + 1
+                    
+                    first_idx = (s_int - (start_step % s_int)) % s_int
+                    indices = torch.arange(first_idx, k_steps, s_int)
+                    
+                    if len(indices) > 0:
+                        cpu_strats = self.hist_strats[indices].cpu()
+                        cpu_logits = self.hist_logits[indices].cpu() if hasattr(self.dynamic, "log_strategies") else None
+                        cpu_u = self.hist_stacked_u[indices].cpu()
+                        cpu_cum_u = self.hist_cum_u[indices].cpu()
+                        cpu_cum_p = self.hist_cum_p[indices].cpu()
+                        
+                        actual_steps = [start_step + idx.item() for idx in indices]
+                        self.stats_collector.record_batch(
+                            steps=actual_steps,
+                            strats=cpu_strats,
+                            logits=cpu_logits,
+                            u_vecs=cpu_u,
+                            cum_u=cpu_cum_u,
+                            cum_p=cpu_cum_p,
+                            action_sizes=self.game.action_sizes
                         )
-                        avg_regrets = compute_average_regret(cum_regrets, step)
 
-                        if is_sample_step or (step == total_steps):
-                            self.stats_collector.record_step(
-                                step=step,
-                                strategies=curr_strats,
-                                expected_payoffs=expected_payoffs,
-                                instant_regrets=instant_regrets,
-                                cum_regrets=cum_regrets,
-                            )
+                        if is_log_step:
+                            # To log, we can just use the last computed metrics from CPU
+                            if len(indices) > 0:
+                                last_cum = self.stats_collector.history_cum_regrets[0][-1]
+                                flat_cum = last_cum.tolist() if isinstance(last_cum, torch.Tensor) else [last_cum]
+                                
+                                # avg regret is just cum / step
+                                flat_avg = [c / step for c in flat_cum]
+                                
+                                postfix = (
+                                    f"max_cum_regret={max(flat_cum):.4f} max_avg_regret={max(flat_avg):.4f}"
+                                )
+                                if getattr(self, "last_ckpt", None) is not None:
+                                    postfix += f" | ckpt={self.last_ckpt}"
+                                progress.update(task_id, postfix=postfix)
 
                         if is_flush_step or (step == total_steps):
                             self.stats_collector.flush_to_disk()
-
-                        if is_log_step:
-                            flat_cum = [
-                                item
-                                for sublist in cum_regrets
-                                for item in (sublist if isinstance(sublist, list) else [sublist])
-                            ]
-                            flat_avg = [
-                                item
-                                for sublist in avg_regrets
-                                for item in (sublist if isinstance(sublist, list) else [sublist])
-                            ]
-                            postfix = (
-                                f"max_cum_regret={max(flat_cum):.4f} max_avg_regret={max(flat_avg):.4f}"
-                            )
-                            if getattr(self, "last_ckpt", None) is not None:
-                                postfix += f" | ckpt={self.last_ckpt}"
-                            progress.update(task_id, postfix=postfix)
 
                         if is_ckpt_step:
                             rng_state = {

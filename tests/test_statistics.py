@@ -19,15 +19,21 @@ def test_incremental_chunk_flushing_and_ram_clearing():
         collector.set_payoffs(payoffs)
 
         # Record Chunk 0 (steps 1 to 5)
-        for step in range(1, 6):
-            strats = [torch.tensor([0.5, 0.5])]
-            collector.record_step(
-                step=step,
-                strategies=strats,
-                expected_payoffs=[0.0],
-                instant_regrets=[0.0],
-                cum_regrets=[0.0],
-            )
+        steps = list(range(1, 6))
+        strats = torch.tensor([[[0.5, 0.5]]]).repeat(5, 1, 1, 1) # (5, 1, 1, 2)
+        u_vecs = torch.zeros((5, 1, 1, 2))
+        cum_u = torch.zeros((5, 1, 1, 2))
+        cum_p = torch.zeros((5, 1, 1))
+        
+        collector.record_batch(
+            steps=steps,
+            strats=strats,
+            logits=None,
+            u_vecs=u_vecs,
+            cum_u=cum_u,
+            cum_p=cum_p,
+            action_sizes=[2]
+        )
 
         assert len(collector.history_steps) == 5
 
@@ -39,18 +45,25 @@ def test_incremental_chunk_flushing_and_ram_clearing():
 
         # Verify RAM buffer was cleared to maintain O(1) memory
         assert len(collector.history_steps) == 0
-        assert len(collector.history_strategies) == 0
+        assert len(collector.history_strategies[0]) == 0
 
         # Record Chunk 1 (steps 6 to 10)
-        for step in range(6, 11):
-            strats = [torch.tensor([0.6, 0.4])]
-            collector.record_step(
-                step=step,
-                strategies=strats,
-                expected_payoffs=[0.1],
-                instant_regrets=[0.05],
-                cum_regrets=[0.2],
-            )
+        steps = list(range(6, 11))
+        strats = torch.tensor([[[0.6, 0.4]]]).repeat(5, 1, 1, 1)
+        u_vecs = torch.tensor([[[0.1, 0.1]]]).repeat(5, 1, 1, 1) # E[u] = 0.1, BR = 0.1 -> regret = 0
+        # for cum_regrets = 0.2, cum_u max - cum_p = 0.2
+        cum_u = torch.tensor([[[0.2, 0.0]]]).repeat(5, 1, 1, 1) 
+        cum_p = torch.zeros((5, 1, 1))
+
+        collector.record_batch(
+            steps=steps,
+            strats=strats,
+            logits=None,
+            u_vecs=u_vecs,
+            cum_u=cum_u,
+            cum_p=cum_p,
+            action_sizes=[2]
+        )
 
         chunk1_file = collector.flush_to_disk()
         assert chunk1_file is not None

@@ -116,6 +116,14 @@ class OptimisticMWU(BaseLearningDynamic):
         """Serialize state dictionary."""
         return {
             "strategies": [s.cpu() for s in self.strategies],
+            "logits": [
+                (
+                    self.log_strategies[0, i, : self.action_sizes[i]].cpu()
+                    if self.batch_size == 1
+                    else self.log_strategies[:, i, : self.action_sizes[i]].cpu()
+                )
+                for i in range(self.num_players)
+            ],
             "prev_utilities": (
                 [
                     (

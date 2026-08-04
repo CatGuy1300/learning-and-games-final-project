@@ -118,7 +118,12 @@ class BaseLearningDynamic(ABC):
         return self.strategies
 
     def step_unrolled_block(
-        self, game: Any, cum_u_2d: torch.Tensor, cum_p_1d: torch.Tensor, k_steps: int
+        self, game: Any, cum_u_2d: torch.Tensor, cum_p_1d: torch.Tensor, k_steps: int,
+        hist_strats: torch.Tensor | None = None,
+        hist_logits: torch.Tensor | None = None,
+        hist_stacked_u: torch.Tensor | None = None,
+        hist_cum_u: torch.Tensor | None = None,
+        hist_cum_p: torch.Tensor | None = None,
     ) -> None:
         """Execute k_steps dynamic updates natively on 2D GPU tensors.
 
@@ -133,11 +138,23 @@ class BaseLearningDynamic(ABC):
         k_steps : int
             Number of unrolled steps.
         """
-        for _ in range(k_steps):
+        for i in range(k_steps):
             if hasattr(torch, "compiler") and hasattr(torch.compiler, "cudagraph_mark_step_begin"):
                 torch.compiler.cudagraph_mark_step_begin()
 
             stacked_u = game.get_stacked_utility_vectors(self.stacked_strategies)
             cum_u_2d += stacked_u
             cum_p_1d += (stacked_u * self.stacked_strategies).sum(dim=-1)
+            
+            if hist_strats is not None:
+                hist_strats[i] = self.stacked_strategies
+                if hist_stacked_u is not None:
+                    hist_stacked_u[i] = stacked_u
+                if hist_cum_u is not None:
+                    hist_cum_u[i] = cum_u_2d
+                if hist_cum_p is not None:
+                    hist_cum_p[i] = cum_p_1d
+                if hist_logits is not None and hasattr(self, "log_strategies"):
+                    hist_logits[i] = self.log_strategies
+                    
             self.step_2d(stacked_u)
