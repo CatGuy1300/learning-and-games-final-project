@@ -1,4 +1,6 @@
 import copy
+import os
+import uuid
 
 import numpy as np
 import torch
@@ -6,6 +8,9 @@ from cmaes import CMA
 
 from src.config.schemas import ExperimentConfig
 from src.engine.runner import ExperimentRunner
+from src.utils.logging import setup_logger
+
+logger = setup_logger("cmaes_optimizer")
 
 
 class CMAESGameOptimizer:
@@ -26,6 +31,7 @@ class CMAESGameOptimizer:
         self.objective_type = self.base_config.cmaes.objective_type
         self.T1_ratio = self.base_config.cmaes.T1_ratio
         self.lambda_reg = self.base_config.cmaes.lambda_reg
+        self.session_id = uuid.uuid4().hex[:8]
         np.random.seed(self.seed)
 
         # Determine shapes
@@ -128,6 +134,26 @@ class CMAESGameOptimizer:
         best_idx = np.argmin(fitnesses)
         return solutions_flat[best_idx], report_regrets[best_idx]
 
+    def save_results(self, best_payoffs: list[torch.Tensor], best_regret: float, out_dir: str = "outputs") -> str:
+        """Save the best payoff matrices and their regret to disk."""
+        os.makedirs(out_dir, exist_ok=True)
+        save_path = os.path.join(out_dir, f"cmaes_best_{self.session_id}.pt")
+        torch.save({
+            "payoffs": best_payoffs,
+            "regret": best_regret,
+            "config": self.base_config.model_dump()
+        }, save_path)
+        logger.info(f"Saved CMA-ES best results to {save_path}")
+        return save_path
+
+    @classmethod
+    def load_results(cls, session_id: str, out_dir: str = "outputs") -> dict:
+        """Load previously saved CMA-ES best payoff matrices."""
+        save_path = os.path.join(out_dir, f"cmaes_best_{session_id}.pt")
+        if not os.path.exists(save_path):
+            raise FileNotFoundError(f"No CMA-ES results found at {save_path}")
+        return torch.load(save_path, weights_only=False)
+
     def optimize(self, generations: int = 50) -> tuple[list[torch.Tensor], float]:
         """Run CMA-ES for the specified number of generations.
 
@@ -168,4 +194,7 @@ class CMAESGameOptimizer:
         # Return unflattened batched tensor but index 0 to make it unbatched
         batched_best = self._unflatten_payoffs(np.array([best_solution]))
         unbatched_best = [p[0] for p in batched_best]
+        
+        self.save_results(unbatched_best, best_regret)
+        
         return unbatched_best, best_regret
