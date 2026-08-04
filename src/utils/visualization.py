@@ -114,6 +114,8 @@ def create_learning_dynamics_animation(
     strats: list[np.ndarray],
     logits: list[np.ndarray] = None,
     instant_payoffs: list[np.ndarray] = None,
+    cum_action_payoffs: list[np.ndarray] = None,
+    cum_expected_payoffs: list[np.ndarray] = None,
     start_step: int = None,
     end_step: int = None,
     separate_regret_plots: bool = False,
@@ -144,7 +146,17 @@ def create_learning_dynamics_animation(
         
     num_players = len(strats)
     has_payoffs = instant_payoffs is not None
-    rows = 4 if has_payoffs else 3
+    has_cum_payoffs = cum_action_payoffs is not None
+    
+    rows = 3
+    if has_cum_payoffs: rows += 1
+    if has_payoffs: rows += 1
+    
+    row_regret = 0
+    row_cumpay = 1 if has_cum_payoffs else -1
+    row_strat = 2 if has_cum_payoffs else 1
+    row_logit = 3 if has_cum_payoffs else 2
+    row_pay = (4 if has_cum_payoffs else 3) if has_payoffs else -1
     
     fig = plt.figure(figsize=(4 * num_players + 2, rows * 4.5))
     plt.subplots_adjust(top=0.92, hspace=0.4, wspace=0.3)
@@ -156,13 +168,13 @@ def create_learning_dynamics_animation(
     
     if separate_regret_plots:
         for i in range(num_players):
-            ax = plt.subplot2grid((rows, num_players), (0, i), fig=fig)
+            ax = plt.subplot2grid((rows, num_players), (row_regret, i), fig=fig)
             reg_axes.append(ax)
             l, = ax.plot([], [], label=f"Player {i+1}", color=colors[i], linewidth=2)
             line_regs.append(l)
             ax.legend()
     else:
-        reg_ax = plt.subplot2grid((rows, num_players), (0, 0), colspan=num_players, fig=fig)
+        reg_ax = plt.subplot2grid((rows, num_players), (row_regret, 0), colspan=num_players, fig=fig)
         reg_axes = [reg_ax] * num_players
         for i in range(num_players):
             l, = reg_ax.plot([], [], label=f"Player {i+1}", color=colors[i], linewidth=2)
@@ -175,6 +187,8 @@ def create_learning_dynamics_animation(
     f_strats_list = []
     f_logits_list = []
     f_payoffs_list = []
+    f_cum_payoffs_list = []
+    f_cum_expected_list = []
     xy_full_list = []
     
     for i in range(num_players):
@@ -198,6 +212,20 @@ def create_learning_dynamics_animation(
         f_logits_list.append(f_logs)
         f_payoffs_list.append(f_pays)
         xy_full_list.append(project_simplex(f_strats))
+        
+        if has_cum_payoffs:
+            if hasattr(cum_action_payoffs[i], 'numpy'):
+                f_cp = cum_action_payoffs[i].numpy()[mask]
+            else:
+                f_cp = np.array(cum_action_payoffs[i])[mask]
+            f_cum_payoffs_list.append(f_cp)
+            
+            if cum_expected_payoffs is not None:
+                if hasattr(cum_expected_payoffs[i], 'numpy'):
+                    f_cep = cum_expected_payoffs[i].numpy()[mask]
+                else:
+                    f_cep = np.array(cum_expected_payoffs[i])[mask]
+                f_cum_expected_list.append(f_cep)
     
     sub_steps = f_steps[indices]
     
@@ -211,12 +239,53 @@ def create_learning_dynamics_animation(
         info_str = f"Step T: {cur_t}  |  {reg_str}\n{prob_str}"
         hud_texts.append(info_str)
 
+    # Cumulative Payoffs Row
+    cum_pay_axes, line_cum_pays, dot_cum_pays = [], [], []
+    line_cum_exp, dot_cum_exp = [], []
+    has_cum_expected = cum_expected_payoffs is not None
+    
+    if has_cum_payoffs:
+        for i in range(num_players):
+            ax = plt.subplot2grid((rows, num_players), (row_cumpay, i), fig=fig)
+            ax.set_title(f"Player {i+1} Cum. Payoffs")
+            
+            num_actions = f_cum_payoffs_list[i].shape[1]
+            lines_i, dots_i = [], []
+            for a in range(num_actions):
+                l, = ax.plot([], [], label=f"Act {a}", linewidth=1.5)
+                d, = ax.plot([], [], marker='o', markersize=5, color=l.get_color())
+                lines_i.append(l)
+                dots_i.append(d)
+                
+            if has_cum_expected:
+                l_exp, = ax.plot([], [], label="Actual Exp", color='black', linestyle='--', linewidth=2.5, zorder=5)
+                d_exp, = ax.plot([], [], marker='o', markersize=6, color='black', zorder=6)
+                line_cum_exp.append(l_exp)
+                dot_cum_exp.append(d_exp)
+                
+            ax.set_xlim(f_steps[0], f_steps[-1])
+            local_min = f_cum_payoffs_list[i].min()
+            local_max = f_cum_payoffs_list[i].max()
+            if has_cum_expected:
+                local_min = min(local_min, f_cum_expected_list[i].min())
+                local_max = max(local_max, f_cum_expected_list[i].max())
+            margin = (local_max - local_min) * 0.05 if local_max != local_min else 0.1
+            ax.set_ylim(local_min - margin, local_max + margin)
+            ax.set_xlabel("Step T")
+            ax.set_ylabel("Cum. Payoffs")
+            ax.grid(True)
+            ax.legend(fontsize=8)
+            
+            cum_pay_axes.append(ax)
+            line_cum_pays.append(lines_i)
+            dot_cum_pays.append(dots_i)
+
     # Strategy Simplex
     simp_axes, line_strats, dot_strats = [], [], []
     vec_logits, vec_payoffs, track_texts = [], [], []
     
     for i in range(num_players):
-        ax = fig.add_subplot(rows, num_players, num_players + i + 1)
+        ax = fig.add_subplot(rows, num_players, row_strat * num_players + i + 1)
         ax.set_title(f"Player {i+1} Strategy Simplex")
         draw_simplex_boundary(ax, num_actions_list[i])
         l, = ax.plot([], [], color=colors[i], alpha=0.6, linewidth=1.5)
@@ -241,7 +310,7 @@ def create_learning_dynamics_animation(
     for i in range(num_players):
         if num_actions_list[i] <= 3:
             ax, l, d = plot_phase_portrait_setup(
-                fig, (rows, num_players, 2*num_players + i + 1), f"Player {i+1} Logits", num_actions_list[i], 
+                fig, (rows, num_players, row_logit * num_players + i + 1), f"Player {i+1} Logits", num_actions_list[i], 
                 f_logits_list[i][indices], "Logit A0", "Logit A1", "Logit A2"
             )
             l.set_color(colors[i])
@@ -250,7 +319,7 @@ def create_learning_dynamics_animation(
             line_logs.append(l)
             dot_logs.append(d)
         else:
-            ax = fig.add_subplot(rows, num_players, 2*num_players + i + 1)
+            ax = fig.add_subplot(rows, num_players, row_logit * num_players + i + 1)
             ax.axis('off')
             ax.text(0.5, 0.5, "Logits (4D+)\nOmitted", ha='center', va='center')
             log_axes.append(ax)
@@ -263,7 +332,7 @@ def create_learning_dynamics_animation(
         for i in range(num_players):
             if num_actions_list[i] <= 3:
                 ax, l, d = plot_phase_portrait_setup(
-                    fig, (rows, num_players, 3*num_players + i + 1), f"Player {i+1} Payoffs", num_actions_list[i], 
+                    fig, (rows, num_players, row_pay * num_players + i + 1), f"Player {i+1} Payoffs", num_actions_list[i], 
                     f_payoffs_list[i][indices], "Payoff A0", "Payoff A1", "Payoff A2"
                 )
                 l.set_color(colors[i])
@@ -272,7 +341,7 @@ def create_learning_dynamics_animation(
                 line_pays.append(l)
                 dot_pays.append(d)
             else:
-                ax = fig.add_subplot(rows, num_players, 3*num_players + i + 1)
+                ax = fig.add_subplot(rows, num_players, row_pay * num_players + i + 1)
                 ax.axis('off')
                 ax.text(0.5, 0.5, "Payoffs (4D+)\nOmitted", ha='center', va='center')
                 pay_axes.append(ax)
@@ -285,6 +354,13 @@ def create_learning_dynamics_animation(
     if has_payoffs:
         artists.extend([l for l in line_pays if l is not None])
         artists.extend([d for d in dot_pays if d is not None])
+    if has_cum_payoffs:
+        for i in range(num_players):
+            artists.extend(line_cum_pays[i])
+            artists.extend(dot_cum_pays[i])
+        if has_cum_expected:
+            artists.extend(line_cum_exp)
+            artists.extend(dot_cum_exp)
         
     # Setup Regret Axis Properties
     min_reg_global = min(0, f_regrets.min())
@@ -339,8 +415,20 @@ def create_learning_dynamics_animation(
         start_idx = indices[tail_start_frame]
         
         # Strategies, Logits, Payoffs with FULL resolution within the window
+        if has_cum_payoffs:
+            for i in range(num_players):
+                f_cp = f_cum_payoffs_list[i][:cur_idx+1]
+                num_actions = f_cp.shape[1]
+                for a in range(num_actions):
+                    line_cum_pays[i][a].set_data(f_steps[:cur_idx+1], f_cp[:, a])
+                    dot_cum_pays[i][a].set_data([f_steps[cur_idx]], [f_cp[-1, a]])
+                if has_cum_expected:
+                    f_cep = f_cum_expected_list[i][:cur_idx+1]
+                    line_cum_exp[i].set_data(f_steps[:cur_idx+1], f_cep)
+                    dot_cum_exp[i].set_data([f_steps[cur_idx]], [f_cep[-1]])
+                    
         for i in range(num_players):
-            x, y = xy_full_list[i][0][start_idx:cur_idx+1], xy_full_list[i][1][start_idx:cur_idx+1]
+            x, y = xy_full_list[i][0][:cur_idx+1], xy_full_list[i][1][:cur_idx+1]
             line_strats[i].set_data(x, y)
             
             px, py = x[-1], y[-1]
@@ -405,8 +493,14 @@ def plot_static_trajectories(steps: np.ndarray,
                              plot_all_actions: bool = False,
                              start_step: int = 0,
                              end_step: int = None,
-                             separate_regret_plots: bool = False):
-    """Plots the static regret and strategy trajectories for an N-player, A-action game."""
+                             separate_regret_plots: bool = False,
+                             cum_action_payoffs: list[torch.Tensor] = None,
+                             cum_expected_payoffs: list[torch.Tensor] = None):
+    """Plots the static regret and strategy trajectories for an N-player, A-action game.
+    
+    Note: To plot cumulative action payoffs, pass `cum_action_payoffs`.
+    If you only have instantaneous payoffs, you can compute this via `torch.cumsum(instant_payoffs, dim=0)`.
+    """
     
     # Slice the temporal arrays for zooming
     start_idx = np.searchsorted(steps, start_step) if start_step is not None else 0
@@ -415,17 +509,27 @@ def plot_static_trajectories(steps: np.ndarray,
     f_steps = steps[start_idx:end_idx]
     f_cum_regrets = cum_regrets[start_idx:end_idx]
     f_strats = [s[start_idx:end_idx] for s in strats]
+    f_cum_payoffs = [cp[start_idx:end_idx] for cp in cum_action_payoffs] if cum_action_payoffs is not None else None
+    f_cum_expected = [cep[start_idx:end_idx] for cep in cum_expected_payoffs] if cum_expected_payoffs is not None else None
     
     num_players = f_cum_regrets.shape[1]
+    has_payoffs = f_cum_payoffs is not None
+    rows = 2 if has_payoffs else 1
     
     if separate_regret_plots:
-        fig, axes = plt.subplots(1, num_players + 1, figsize=(7 * (num_players + 1), 5))
-        reg_axes = axes[:-1]
-        strat_ax = axes[-1]
+        cols = num_players + 1
+        fig = plt.figure(figsize=(7 * cols, 5 * rows))
+        reg_axes = [fig.add_subplot(rows, cols, i + 1) for i in range(num_players)]
+        strat_ax = fig.add_subplot(rows, cols, cols)
+        if has_payoffs:
+            pay_axes = [fig.add_subplot(rows, cols, cols + i + 1) for i in range(num_players)]
     else:
-        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-        reg_axes = [axes[0]] * num_players
-        strat_ax = axes[1]
+        fig = plt.figure(figsize=(14, 5 * rows))
+        reg_ax = fig.add_subplot(rows, 2, 1)
+        reg_axes = [reg_ax] * num_players
+        strat_ax = fig.add_subplot(rows, 2, 2)
+        if has_payoffs:
+            pay_axes = [fig.add_subplot(rows, num_players, num_players + i + 1) for i in range(num_players)]
         
     colors = plt.cm.tab10(np.linspace(0, 1, num_players))
     
@@ -466,5 +570,24 @@ def plot_static_trajectories(steps: np.ndarray,
     else:
         strat_ax.legend()
         
+    # 3. Cumulative Action Payoffs
+    if has_payoffs:
+        for i in range(num_players):
+            num_actions = f_cum_payoffs[i].shape[1]
+            for a in range(num_actions):
+                ls = linestyles[a % len(linestyles)]
+                arr = f_cum_payoffs[i][:, a].numpy() if hasattr(f_cum_payoffs[i][:, a], 'numpy') else np.array(f_cum_payoffs[i][:, a])
+                pay_axes[i].plot(f_steps, arr, color=colors[i], linestyle=ls, label=f"Act {a}")
+            
+            if f_cum_expected is not None:
+                arr_exp = f_cum_expected[i].numpy() if hasattr(f_cum_expected[i], 'numpy') else np.array(f_cum_expected[i])
+                pay_axes[i].plot(f_steps, arr_exp, color='black', linestyle='--', linewidth=2.5, label="Actual Exp")
+                
+            pay_axes[i].set_xlabel("Step T")
+            pay_axes[i].set_ylabel("Cumulative Payoff")
+            pay_axes[i].set_title(f"{title_prefix} Player {i+1} Cum. Payoffs")
+            pay_axes[i].grid(True)
+            pay_axes[i].legend()
+            
     plt.tight_layout()
-    return fig, axes
+    return fig, None
