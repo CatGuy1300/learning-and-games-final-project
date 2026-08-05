@@ -5,12 +5,14 @@ from torch import nn
 class ContinuousGameDynamics(nn.Module):
     """Generic ODE Surrogate Base Class for learning dynamics."""
     
-    def __init__(self, U1: torch.Tensor, U2: torch.Tensor):
+    def __init__(self, U1: torch.Tensor, U2: torch.Tensor, logit_penalty_threshold: float | None = None, logit_penalty_norm: int = 2):
         super().__init__()
         # We assume U1 and U2 are parameters or tensors that require gradients
         self.U1 = U1
         self.U2 = U2
         self.A1, self.A2 = U1.shape
+        self.logit_penalty_threshold = logit_penalty_threshold
+        self.logit_penalty_norm = logit_penalty_norm
 
     def compute_w_dot(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         """
@@ -35,6 +37,10 @@ class ContinuousGameDynamics(nn.Module):
         Z2 = state[idx : idx+A2]; idx += A2
         P2 = state[idx : idx+1]; idx += 1
         
+        has_barrier = len(state) > idx
+        if has_barrier:
+            B = state[idx : idx+1]; idx += 1
+        
         # Compute probabilities
         x = torch.softmax(w1, dim=-1)
         y = torch.softmax(w2, dim=-1)
@@ -55,14 +61,26 @@ class ContinuousGameDynamics(nn.Module):
         Z2_dot = V2
         P2_dot = y @ V2 # Equivalent to x @ self.U2 @ y
         
+        # Penalty Integration
+        if has_barrier and self.logit_penalty_threshold is not None:
+            w_all = state[0 : A1 + A2]
+            excess = torch.nn.functional.relu(torch.abs(w_all) - self.logit_penalty_threshold)
+            B_dot = torch.sum(excess ** self.logit_penalty_norm).unsqueeze(0)
+        elif has_barrier:
+            B_dot = torch.zeros(1, device=state.device, dtype=state.dtype)
+
         # Pack state derivative
-        state_dot = torch.cat([
+        state_components = [
             w_dot,
             Z1_dot,
             P1_dot.unsqueeze(0),
             Z2_dot,
             P2_dot.unsqueeze(0)
-        ])
+        ]
+        if has_barrier:
+            state_components.append(B_dot)
+            
+        state_dot = torch.cat(state_components)
         
         return state_dot
 
@@ -71,8 +89,8 @@ class OMWUContinuous(ContinuousGameDynamics):
     """
     Specific OMWU ODE Surrogate using High-Resolution M * w_dot = V math.
     """
-    def __init__(self, U1: torch.Tensor, U2: torch.Tensor, eta: float):
-        super().__init__(U1, U2)
+    def __init__(self, U1: torch.Tensor, U2: torch.Tensor, eta: float, logit_penalty_threshold: float | None = None, logit_penalty_norm: int = 2):
+        super().__init__(U1, U2, logit_penalty_threshold=logit_penalty_threshold, logit_penalty_norm=logit_penalty_norm)
         self.eta = eta
 
     def compute_w_dot(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:

@@ -97,6 +97,8 @@ def instantiate_dynamic(
             batch_size=batch_size,
             T=config.execution.total_steps,
             strict_theory_eta=config.dynamic.strict_theory_eta,
+            logit_penalty_threshold=config.dynamic.logit_penalty_threshold,
+            logit_penalty_norm=config.dynamic.logit_penalty_norm,
         )
     elif algo == "mwu":
         return MultiplicativeWeightsUpdate(
@@ -105,6 +107,8 @@ def instantiate_dynamic(
             device=device,
             batch_size=batch_size,
             T=config.execution.total_steps,
+            logit_penalty_threshold=config.dynamic.logit_penalty_threshold,
+            logit_penalty_norm=config.dynamic.logit_penalty_norm,
         )
     elif algo == "mirror_prox":
         return MirrorProx(
@@ -486,6 +490,9 @@ class ExperimentRunner:
             "output_dir": self.config.logging.output_dir,
             "last_chunk_file": last_chunk_path,
         }
+        
+        if hasattr(self.dynamic, "cumulative_logit_penalty"):
+            summary["logit_penalty"] = self.dynamic.cumulative_logit_penalty.clone()
 
         flat_final_avg = [
             item

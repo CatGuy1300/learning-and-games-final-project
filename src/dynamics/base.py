@@ -54,6 +54,10 @@ class BaseLearningDynamic(ABC):
         self.ind = torch.arange(
             1, self.max_action_size + 1, device=self.device, dtype=torch.get_default_dtype()
         ).view(1, 1, self.max_action_size)
+        
+        self.cumulative_logit_penalty = torch.zeros(
+            self.batch_size, device=self.device, dtype=torch.get_default_dtype()
+        )
 
     @property
     def strategies(self) -> list[torch.Tensor]:

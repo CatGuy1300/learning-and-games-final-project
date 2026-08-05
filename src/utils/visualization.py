@@ -495,7 +495,10 @@ def plot_static_trajectories(steps: np.ndarray,
                              end_step: int = None,
                              separate_regret_plots: bool = False,
                              cum_action_payoffs: list[torch.Tensor] = None,
-                             cum_expected_payoffs: list[torch.Tensor] = None):
+                             cum_expected_payoffs: list[torch.Tensor] = None,
+                             logits: list[torch.Tensor] = None,
+                             plot_logits: bool = False,
+                             separate_logit_plots: bool = False):
     """Plots the static regret and strategy trajectories for an N-player, A-action game.
     
     Note: To plot cumulative action payoffs, pass `cum_action_payoffs`.
@@ -511,25 +514,78 @@ def plot_static_trajectories(steps: np.ndarray,
     f_strats = [s[start_idx:end_idx] for s in strats]
     f_cum_payoffs = [cp[start_idx:end_idx] for cp in cum_action_payoffs] if cum_action_payoffs is not None else None
     f_cum_expected = [cep[start_idx:end_idx] for cep in cum_expected_payoffs] if cum_expected_payoffs is not None else None
+    f_logits = [l[start_idx:end_idx] for l in logits] if logits is not None else None
     
     num_players = f_cum_regrets.shape[1]
     has_payoffs = f_cum_payoffs is not None
-    rows = 2 if has_payoffs else 1
+    has_logits = plot_logits or (f_logits is not None)
     
+    num_actions_list = [f_strats[i].shape[1] for i in range(num_players)]
+    max_actions = max(num_actions_list)
+    
+    if has_logits and f_logits is None:
+        f_logits = []
+        for s in f_strats:
+            s_np = s.numpy() if hasattr(s, 'numpy') else np.array(s)
+            l = np.log(np.maximum(s_np, 1e-12))
+            l = l - l.mean(axis=1, keepdims=True)
+            f_logits.append(l)
+            
+    rows = 1
+    if has_logits: 
+        rows += max_actions if separate_logit_plots else 1
+    if has_payoffs: rows += 1
+    
+    N = num_players
     if separate_regret_plots:
-        cols = num_players + 1
-        fig = plt.figure(figsize=(7 * cols, 5 * rows))
-        reg_axes = [fig.add_subplot(rows, cols, i + 1) for i in range(num_players)]
-        strat_ax = fig.add_subplot(rows, cols, cols)
+        total_cols = N * (N + 1)
+        fig = plt.figure(figsize=(7 * (N + 1), 5 * rows))
+        
+        reg_axes = [plt.subplot2grid((rows, total_cols), (0, i * N), colspan=N, fig=fig) for i in range(N)]
+        strat_ax = plt.subplot2grid((rows, total_cols), (0, N * N), colspan=N, fig=fig)
+        
+        current_row = 1
+        if has_logits:
+            if separate_logit_plots:
+                logit_axes = []
+                for i in range(N):
+                    p_axes = []
+                    for a in range(num_actions_list[i]):
+                        ax = plt.subplot2grid((rows, total_cols), (current_row + a, i * (N + 1)), colspan=N + 1, fig=fig)
+                        p_axes.append(ax)
+                    logit_axes.append(p_axes)
+                current_row += max_actions
+            else:
+                logit_axes = [plt.subplot2grid((rows, total_cols), (current_row, i * (N + 1)), colspan=N + 1, fig=fig) for i in range(N)]
+                current_row += 1
+                
         if has_payoffs:
-            pay_axes = [fig.add_subplot(rows, cols, cols + i + 1) for i in range(num_players)]
+            pay_axes = [plt.subplot2grid((rows, total_cols), (current_row, i * (N + 1)), colspan=N + 1, fig=fig) for i in range(N)]
     else:
+        total_cols = 2 * N
         fig = plt.figure(figsize=(14, 5 * rows))
-        reg_ax = fig.add_subplot(rows, 2, 1)
-        reg_axes = [reg_ax] * num_players
-        strat_ax = fig.add_subplot(rows, 2, 2)
+        
+        reg_ax = plt.subplot2grid((rows, total_cols), (0, 0), colspan=N, fig=fig)
+        reg_axes = [reg_ax] * N
+        strat_ax = plt.subplot2grid((rows, total_cols), (0, N), colspan=N, fig=fig)
+        
+        current_row = 1
+        if has_logits:
+            if separate_logit_plots:
+                logit_axes = []
+                for i in range(N):
+                    p_axes = []
+                    for a in range(num_actions_list[i]):
+                        ax = plt.subplot2grid((rows, total_cols), (current_row + a, i * 2), colspan=2, fig=fig)
+                        p_axes.append(ax)
+                    logit_axes.append(p_axes)
+                current_row += max_actions
+            else:
+                logit_axes = [plt.subplot2grid((rows, total_cols), (current_row, i * 2), colspan=2, fig=fig) for i in range(N)]
+                current_row += 1
+                
         if has_payoffs:
-            pay_axes = [fig.add_subplot(rows, num_players, num_players + i + 1) for i in range(num_players)]
+            pay_axes = [plt.subplot2grid((rows, total_cols), (current_row, i * 2), colspan=2, fig=fig) for i in range(N)]
         
     colors = plt.cm.tab10(np.linspace(0, 1, num_players))
     
@@ -588,6 +644,33 @@ def plot_static_trajectories(steps: np.ndarray,
             pay_axes[i].set_title(f"{title_prefix} Player {i+1} Cum. Payoffs")
             pay_axes[i].grid(True)
             pay_axes[i].legend()
+            
+    # 4. Logit Trajectories
+    if has_logits:
+        for i in range(num_players):
+            num_actions = f_logits[i].shape[1]
+            for a in range(num_actions):
+                ls = linestyles[a % len(linestyles)]
+                arr = f_logits[i][:, a]
+                if hasattr(arr, 'numpy'): arr = arr.numpy()
+                
+                if separate_logit_plots:
+                    ax = logit_axes[i][a]
+                    ax.plot(f_steps, arr, color=colors[i], linestyle=ls, label=f"Act {a}")
+                    ax.set_xlabel("Step T")
+                    ax.set_ylabel("Logit (Centered)")
+                    ax.set_title(f"{title_prefix} Player {i+1} Logit Act {a}")
+                    ax.grid(True)
+                    ax.legend()
+                else:
+                    logit_axes[i].plot(f_steps, arr, color=colors[i], linestyle=ls, label=f"Act {a}")
+                
+            if not separate_logit_plots:
+                logit_axes[i].set_xlabel("Step T")
+                logit_axes[i].set_ylabel("Logit (Centered)")
+                logit_axes[i].set_title(f"{title_prefix} Player {i+1} Logits")
+                logit_axes[i].grid(True)
+                logit_axes[i].legend()
             
     plt.tight_layout()
     return fig, None

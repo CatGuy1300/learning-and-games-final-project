@@ -21,16 +21,20 @@ class MultiplicativeWeightsUpdate(BaseLearningDynamic):
         device: torch.device = torch.device("cpu"),
         batch_size: int = 1,
         T: int = 10000,
+        logit_penalty_threshold: float | None = None,
+        logit_penalty_norm: int = 2,
     ) -> None:
         """Initialize MWU dynamic."""
         if eta is not None:
             inferred_eta = eta
         else:
             inferred_eta = math.sqrt(math.log(max(action_sizes)) / T)
-            logger.info(f"Inferred MWU theory eta = {inferred_eta:.6f} (sqrt(log(max(A)) / T))")
+            logger.info(f"Inferred MWU empirical eta = {inferred_eta:.6f} (1 / (4 * max(A)))")
             
         super().__init__(action_sizes=action_sizes, eta=inferred_eta, device=device, batch_size=batch_size)
         self.log_strategies = torch.zeros_like(self.stacked_strategies)
+        self.logit_penalty_threshold = logit_penalty_threshold
+        self.logit_penalty_norm = logit_penalty_norm
         self.reset()
 
     def reset(self, initial_strategies: list[torch.Tensor] | None = None) -> None:
@@ -67,11 +71,18 @@ class MultiplicativeWeightsUpdate(BaseLearningDynamic):
         self.log_strategies.add_(stacked_u_curr, alpha=self.eta)
 
         # 2. Max-Centering in-place
-        max_val = self.log_strategies.max(dim=-1, keepdim=True).values
-        self.log_strategies.sub_(max_val)
+        max_vals = self.log_strategies.max(dim=-1, keepdim=True).values
+        self.log_strategies.sub_(max_vals)
+        
+        # 3. Logit Penalty accumulation
+        if self.logit_penalty_threshold is not None:
+            excess = torch.nn.functional.relu(torch.abs(self.log_strategies) - self.logit_penalty_threshold)
+            self.cumulative_logit_penalty += (excess ** self.logit_penalty_norm).sum(dim=(-1, -2))
+
+        # Apply mask
         self.log_strategies.masked_fill_(~self.mask, -float("inf"))
 
-        # 3. Softmax exponentiation in-place
+        # 4. Softmax probability evaluation (in-place)
         torch.exp(self.log_strategies, out=self.stacked_strategies)
         self.stacked_strategies.masked_fill_(~self.mask, 0.0)
 

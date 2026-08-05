@@ -118,13 +118,22 @@ class CMAESGameOptimizer:
             report_regrets = p1_regrets_t
 
         else:
-            metrics = runner.run(target_steps=T)
-            regrets_by_player = metrics["final_cum_regrets"]
+            metrics_t = runner.run(target_steps=T)
+            regrets_by_player = metrics_t["final_cum_regrets"]
 
             p1_regrets = np.array(regrets_by_player[0])
 
             fitnesses = -p1_regrets  # Negative because CMA-ES minimizes
             report_regrets = p1_regrets
+
+        # Extract logit penalty if enabled
+        if self.base_config.cmaes.logit_penalty_weight > 0.0 and "logit_penalty" in metrics_t:
+            pen_tensor = metrics_t["logit_penalty"]
+            if self.base_config.cmaes.logit_penalty_average:
+                pen_tensor = pen_tensor / T
+            penalty = pen_tensor.cpu().numpy()
+            # Penalty minimizes fitness further
+            fitnesses -= self.base_config.cmaes.logit_penalty_weight * penalty
 
         # Tell
         solutions_with_fitness = [(solutions_flat[b], fitnesses[b]) for b in range(B)]

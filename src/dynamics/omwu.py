@@ -36,6 +36,8 @@ class OptimisticMWU(BaseLearningDynamic):
         batch_size: int = 1,
         T: int = 10000,
         strict_theory_eta: bool = False,
+        logit_penalty_threshold: float | None = None,
+        logit_penalty_norm: int = 2,
     ) -> None:
         """Initialize OMWU dynamic."""
         if eta is not None:
@@ -51,6 +53,8 @@ class OptimisticMWU(BaseLearningDynamic):
         self.stacked_prev_utilities = torch.zeros_like(self.stacked_strategies)
         self.has_prev = False
         self.log_strategies = torch.zeros_like(self.stacked_strategies)
+        self.logit_penalty_threshold = logit_penalty_threshold
+        self.logit_penalty_norm = logit_penalty_norm
         self.reset()
 
     def reset(self, initial_strategies: list[torch.Tensor] | None = None) -> None:
@@ -70,6 +74,7 @@ class OptimisticMWU(BaseLearningDynamic):
         self.log_strategies.masked_fill_(~self.mask, -float("inf"))
         self.stacked_prev_utilities.zero_()
         self.has_prev = False
+        self.cumulative_logit_penalty.zero_()
 
     def step(self, utility_vectors: list[torch.Tensor]) -> list[torch.Tensor]:
         """Update strategies using 2D vectorized OMWU step rule across all N players simultaneously."""
@@ -98,15 +103,22 @@ class OptimisticMWU(BaseLearningDynamic):
         self.log_strategies.sub_(stacked_u_prev, alpha=self.eta)
 
         # 2. Max-Centering in-place
-        max_val = self.log_strategies.max(dim=-1, keepdim=True).values
-        self.log_strategies.sub_(max_val)
+        max_vals = self.log_strategies.max(dim=-1, keepdim=True).values
+        self.log_strategies.sub_(max_vals)
+        
+        # 3. Logit Penalty accumulation
+        if self.logit_penalty_threshold is not None:
+            excess = torch.nn.functional.relu(torch.abs(self.log_strategies) - self.logit_penalty_threshold)
+            self.cumulative_logit_penalty += (excess ** self.logit_penalty_norm).sum(dim=(-1, -2))
+
+        # Apply mask
         self.log_strategies.masked_fill_(~self.mask, -float("inf"))
 
-        # 3. Softmax exponentiation in-place
+        # 4. Softmax exponentiation in-place
         torch.exp(self.log_strategies, out=self.stacked_strategies)
         self.stacked_strategies.masked_fill_(~self.mask, 0.0)
 
-        # 4. Normalize in-place
+        # 5. Normalize in-place
         self.stacked_strategies.div_(self.stacked_strategies.sum(dim=-1, keepdim=True))
 
         self.stacked_prev_utilities.copy_(stacked_u_curr)

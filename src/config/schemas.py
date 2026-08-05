@@ -42,6 +42,8 @@ class DynamicConfig(BaseModel):
     custom_initial_strategies: list[list[float]] | None = Field(
         default=None, description="Custom initial probability distributions per player"
     )
+    logit_penalty_threshold: float | None = Field(default=None, description="Threshold above which absolute logits are penalized")
+    logit_penalty_norm: int = Field(default=2, description="Norm degree for the penalty (1 for L1, 2 for L2)")
 
 
 class CheckpointConfig(BaseModel):
@@ -114,6 +116,8 @@ class CMAESConfig(BaseModel):
     T1_ratio: float = Field(default=0.5, gt=0.0, lt=1.0, description="Ratio of total_steps to use for T1 in delta_reg objective")
     lambda_reg: float = Field(default=1.0, ge=0.0, description="Regularization weight for delta_reg objective")
     population_size: int | None = Field(default=None, ge=2, description="Population size for CMA-ES. If None, it is inferred.")
+    logit_penalty_weight: float = Field(default=0.0, description="Weight multiplier for the logit penalty in the objective")
+    logit_penalty_average: bool = Field(default=True, description="Whether to divide the total penalty by T")
 
 
 class ExperimentConfig(BaseModel):

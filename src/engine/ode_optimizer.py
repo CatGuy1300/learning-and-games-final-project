@@ -17,7 +17,11 @@ class ODEAdjointOptimizer:
         N_steps: int, 
         projection_mode: str = "tanh", 
         lr: float = 0.1, 
-        device: torch.device = None
+        device: torch.device = None,
+        logit_penalty_threshold: float | None = None,
+        logit_penalty_norm: int = 2,
+        logit_penalty_weight: float = 0.0,
+        logit_penalty_average: bool = True
     ):
         self.A1 = A1
         self.A2 = A2
@@ -27,6 +31,10 @@ class ODEAdjointOptimizer:
         self.projection_mode = projection_mode
         self.lr = lr
         self.device = device if device is not None else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.logit_penalty_threshold = logit_penalty_threshold
+        self.logit_penalty_norm = logit_penalty_norm
+        self.logit_penalty_weight = logit_penalty_weight
+        self.logit_penalty_average = logit_penalty_average
         
     def optimize(self, epochs: int = 50, seed: int = 42) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
@@ -80,23 +88,34 @@ class ODEAdjointOptimizer:
                     curr_U1 = U1
                     curr_U2 = U2
                     
-                dyn = OMWUContinuous(curr_U1, curr_U2, self.eta)
-                state0 = torch.zeros(2*A1 + 2*A2 + 2, device=self.device)
+                dyn = OMWUContinuous(curr_U1, curr_U2, self.eta, logit_penalty_threshold=self.logit_penalty_threshold, logit_penalty_norm=self.logit_penalty_norm)
+                state_size = 2*A1 + 2*A2 + 2
+                if self.logit_penalty_threshold is not None:
+                    state_size += 1
+                state0 = torch.zeros(state_size, device=self.device)
                 
-                states = odeint(dyn, state0, final_t, method='dopri5')
+                states = odeint(dyn, state0, final_t, method='dopri5', adjoint_params=tuple(params))
                 
                 final_state = states[-1]
                 idx = A1 + A2
                 Z1_T = final_state[idx : idx+A1]; idx += A1
                 P1_T = final_state[idx : idx+1]; idx += 1
                 Z2_T = final_state[idx : idx+A2]; idx += A2
-                P2_T = final_state[idx : idx+1]
+                P2_T = final_state[idx : idx+1]; idx += 1
                 
                 regret_1 = (Z1_T.max() - P1_T) / self.eta
                 regret_2 = (Z2_T.max() - P2_T) / self.eta
                 total_regret = regret_1 + regret_2
                 
                 loss = -total_regret
+                
+                if self.logit_penalty_threshold is not None and self.logit_penalty_weight > 0.0:
+                    B_T = final_state[idx : idx+1]
+                    penalty = B_T[0]
+                    if self.logit_penalty_average:
+                        penalty = penalty / self.T
+                    loss += self.logit_penalty_weight * penalty
+
                 loss.backward()
                 
                 optimizer.step()
