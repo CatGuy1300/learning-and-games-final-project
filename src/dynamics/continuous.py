@@ -1,20 +1,26 @@
 import torch
 from torch import nn
+from src.games.nplayer_game import NPlayerGame
 
 
 class ContinuousGameDynamics(nn.Module):
-    """Generic ODE Surrogate Base Class for learning dynamics."""
+    """Generic ODE Surrogate Base Class for learning dynamics. Supports N players."""
     
-    def __init__(self, U1: torch.Tensor, U2: torch.Tensor, logit_penalty_threshold: float | None = None, logit_penalty_norm: int = 2):
+    def __init__(self, payoffs: list[torch.Tensor], logit_penalty_threshold: float | None = None, logit_penalty_norm: int = 2, logit_penalty_mode: str = "absolute"):
         super().__init__()
-        # We assume U1 and U2 are parameters or tensors that require gradients
-        self.U1 = U1
-        self.U2 = U2
-        self.A1, self.A2 = U1.shape
+        self.payoffs = [U for U in payoffs]
+        self.num_players = len(self.payoffs)
+        self.action_sizes = list(self.payoffs[0].shape[-self.num_players:])
+        
         self.logit_penalty_threshold = logit_penalty_threshold
         self.logit_penalty_norm = logit_penalty_norm
+        self.logit_penalty_mode = logit_penalty_mode
+        
+        device = payoffs[0].device
+        dtype = payoffs[0].dtype
+        self.game = NPlayerGame(self.payoffs, dtype=dtype, device=device)
 
-    def compute_w_dot(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    def compute_w_dot(self, strategies: list[torch.Tensor]) -> torch.Tensor:
         """
         Computes the continuous gradient w_dot for the unconstrained logits.
         Subclasses must implement this based on their specific discrete algorithms.
@@ -24,99 +30,134 @@ class ContinuousGameDynamics(nn.Module):
     def forward(self, t, state):
         """
         Forward pass for torchdiffeq.odeint.
-        State packing: [w1, w2, Z1, P1, Z2, P2]
+        State packing: [w_1, ..., w_N, Z_1, P_1, ..., Z_N, P_N, B (optional)]
         """
-        A1, A2 = self.A1, self.A2
-        
-        # Unpack state
         idx = 0
-        w1 = state[idx : idx+A1]; idx += A1
-        w2 = state[idx : idx+A2]; idx += A2
-        Z1 = state[idx : idx+A1]; idx += A1
-        P1 = state[idx : idx+1]; idx += 1
-        Z2 = state[idx : idx+A2]; idx += A2
-        P2 = state[idx : idx+1]; idx += 1
         
+        # 1. Unpack logits
+        logits = []
+        for A in self.action_sizes:
+            logits.append(state[idx : idx + A])
+            idx += A
+            
+        # 2. Unpack continuous regret Z and continuous average probability P
+        Z_list = []
+        P_list = []
+        for A in self.action_sizes:
+            Z_list.append(state[idx : idx + A])
+            idx += A
+            P_list.append(state[idx : idx + 1])
+            idx += 1
+            
         has_barrier = len(state) > idx
         if has_barrier:
-            B = state[idx : idx+1]; idx += 1
+            B = state[idx : idx + 1]
+            idx += 1
+            
+        # 3. Compute probabilities
+        strategies = [torch.softmax(w, dim=-1) for w in logits]
         
-        # Compute probabilities
-        x = torch.softmax(w1, dim=-1)
-        y = torch.softmax(w2, dim=-1)
+        # 4. Compute algorithm specific logits gradient
+        w_dot = self.compute_w_dot(strategies)
         
-        # Compute specific dynamics for w_dot
-        w_dot = self.compute_w_dot(x, y)
+        # 5. Expected Value Vectors (V)
+        V_list = self.game.get_utility_vectors(strategies)
         
-        # Expected Value Vectors (V)
-        V1 = self.U1 @ y
-        V2 = self.U2.T @ x
-        
-        # Continuous Regret integrands
-        # Player 1
-        Z1_dot = V1
-        P1_dot = x @ V1
-        
-        # Player 2
-        Z2_dot = V2
-        P2_dot = y @ V2 # Equivalent to x @ self.U2 @ y
-        
-        # Penalty Integration
+        # 6. Continuous Regret integrands
+        Z_dot_list = []
+        P_dot_list = []
+        for i in range(self.num_players):
+            x = strategies[i]
+            V = V_list[i]
+            Z_dot_list.append(V)
+            P_dot_list.append((x @ V).unsqueeze(0))
+            
+        # 7. Penalty Integration
         if has_barrier and self.logit_penalty_threshold is not None:
-            w_all = state[0 : A1 + A2]
-            excess = torch.nn.functional.relu(torch.abs(w_all) - self.logit_penalty_threshold)
-            B_dot = torch.sum(excess ** self.logit_penalty_norm).unsqueeze(0)
+            penalty_sum = 0.0
+            for i, w_i in enumerate(logits):
+                if self.logit_penalty_mode == "centered":
+                    w_target = w_i - torch.mean(w_i)
+                else:
+                    w_target = w_i
+                
+                excess = torch.nn.functional.relu(torch.abs(w_target) - self.logit_penalty_threshold)
+                penalty_sum = penalty_sum + torch.sum(excess ** self.logit_penalty_norm)
+            
+            B_dot = penalty_sum.unsqueeze(0)
         elif has_barrier:
             B_dot = torch.zeros(1, device=state.device, dtype=state.dtype)
 
-        # Pack state derivative
-        state_components = [
-            w_dot,
-            Z1_dot,
-            P1_dot.unsqueeze(0),
-            Z2_dot,
-            P2_dot.unsqueeze(0)
-        ]
+        # 8. Pack state derivative
+        state_components = [w_dot]
+        for i in range(self.num_players):
+            state_components.append(Z_dot_list[i])
+            state_components.append(P_dot_list[i])
+            
         if has_barrier:
             state_components.append(B_dot)
             
         state_dot = torch.cat(state_components)
-        
         return state_dot
 
 
 class OMWUContinuous(ContinuousGameDynamics):
     """
     Specific OMWU ODE Surrogate using High-Resolution M * w_dot = V math.
+    Generalized to N-players via full block-Jacobian mass matrix inversion.
     """
-    def __init__(self, U1: torch.Tensor, U2: torch.Tensor, eta: float, logit_penalty_threshold: float | None = None, logit_penalty_norm: int = 2):
-        super().__init__(U1, U2, logit_penalty_threshold=logit_penalty_threshold, logit_penalty_norm=logit_penalty_norm)
+    def __init__(self, payoffs: list[torch.Tensor], eta: float, logit_penalty_threshold: float | None = None, logit_penalty_norm: int = 2, logit_penalty_mode: str = "absolute"):
+        super().__init__(payoffs, logit_penalty_threshold=logit_penalty_threshold, logit_penalty_norm=logit_penalty_norm, logit_penalty_mode=logit_penalty_mode)
         self.eta = eta
+        
+        self.J_Vx_static = None
+        if self.num_players == 2:
+            # For 2-player multilinear games, the cross-derivative Jacobian is perfectly static!
+            U1 = self.payoffs[0]
+            U2 = self.payoffs[1]
+            Z11 = torch.zeros((U1.shape[0], U1.shape[0]), device=U1.device, dtype=U1.dtype)
+            Z22 = torch.zeros((U2.shape[1], U2.shape[1]), device=U1.device, dtype=U1.dtype)
+            
+            row1 = torch.cat([Z11, U1], dim=1)
+            row2 = torch.cat([U2.T, Z22], dim=1)
+            self.J_Vx_static = torch.cat([row1, row2], dim=0)
 
-    def compute_w_dot(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        A1, A2 = self.A1, self.A2
+    def compute_w_dot(self, strategies: list[torch.Tensor]) -> torch.Tensor:
+        V_list = self.game.get_utility_vectors(strategies)
+        V = torch.cat(V_list)
         
-        # Expected Value Vectors
-        V1 = self.U1 @ y
-        V2 = self.U2.T @ x
-        V = torch.cat([V1, V2])
+        # Softmax Jacobians: Sigma_i = diag(x_i) - x_i x_i^T
+        Sigmas = []
+        for x in strategies:
+            Sigmas.append(torch.diag(x) - torch.outer(x, x))
+            
+        # Build block diagonal Sigma matrix
+        Sigma_block = torch.block_diag(*Sigmas)
         
-        # Softmax Jacobians
-        Sigma_x = torch.diag(x) - torch.outer(x, x)
-        Sigma_y = torch.diag(y) - torch.outer(y, y)
+        # Exact cross-derivative Jacobian J_Vx = dV/dx
+        if self.J_Vx_static is not None:
+            J_Vx = self.J_Vx_static
+        else:
+            # Fallback for N > 2 using generic autograd
+            def compute_V(x_flat):
+                strats = []
+                offset = 0
+                for A in self.action_sizes:
+                    strats.append(x_flat[offset : offset+A])
+                    offset += A
+                return torch.cat(self.game.get_utility_vectors(strats))
+                
+            x_flat = torch.cat(strategies)
+            from torch.func import jacrev
+            J_Vx = jacrev(compute_V)(x_flat)
         
-        # Cross-Derivative Blocks of Vector Field
-        J12 = self.U1 @ Sigma_y
-        J21 = self.U2.T @ Sigma_x
+        # J_w = J_Vx @ Sigma
+        J_w = J_Vx @ Sigma_block
         
-        # Mass Matrix M = I - (eta / 2) J
-        # Solve M * w_dot = V via Schur Complement on blocks
-        coef = self.eta / 2
-        S = torch.eye(A1, device=x.device, dtype=x.dtype) - (coef**2) * (J12 @ J21)
-        rhs = V1 + coef * (J12 @ V2)
+        # Mass Matrix M = I - (eta / 2) J_w
+        I = torch.eye(J_w.shape[0], device=strategies[0].device, dtype=strategies[0].dtype)
+        M = I - (self.eta / 2.0) * J_w
         
-        w1_dot = torch.linalg.solve(S, rhs)
-        w2_dot = V2 + coef * (J21 @ w1_dot)
-        
-        w_dot = torch.cat([w1_dot, w2_dot])
+        # Solve M * w_dot = V
+        w_dot = torch.linalg.solve(M, V)
         return w_dot
