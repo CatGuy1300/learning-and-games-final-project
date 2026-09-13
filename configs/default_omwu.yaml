@@ -1,27 +1,60 @@
-name: "matching_pennies_omwu"
+name: "random_omwu"
+
 game:
   num_players: 2
   action_sizes: [2, 2]
   utility_range: [-1.0, 1.0]
-  generator: "matching_pennies"
+  generator: "random"
+  seed: 42
+
 dynamic:
   algorithm: "omwu"
-  eta: 0.05
-  initial_strategy_type: "custom"
-  custom_initial_strategies:
-    - [0.8, 0.2]
-    - [0.3, 0.7]
+  eta: null                           # Set to null so the code uses your brilliant `inferred_eta = 1 / (8 * max(A))` rule!
+  initial_strategy_type: "uniform"
+
+  # Logit penalties for boundary stability (CRITICAL FIXES)
+  logit_penalty_threshold: 12.0       # Safe zone to prevent float collapse (~24 spread)
+  logit_penalty_norm: 2
+  logit_penalty_mode: "centered"      # MUST be "centered" because Softmax is shift-invariant!
+
+execution:
+  total_steps: 200000                 # 5,000 is too short to see asymptotic limit cycles; 200k-400k is needed
+  device: "auto"
+  seed: 42
+  compile: true
+  steps_per_call: 100
+  dtype: "float64"                    # MUST be float64 to prevent premature math destruction at w=15!
+  fp32_precision: "highest"
+  quiet: false
+
+cmaes:
+  # General params
+  sigma: 0.3                          # Lowered to 0.3 to keep initial search safely inside [-1, 1] bounds
+  seed: 42
+  population_size: 40                 # Explicitly set a strong baseline population
+
+  # Objective logic
+  objective_type: "envelope_trend_log"
+  T1_ratio: 0.8                       # ADDED: Essential for windowed envelope and volatility tracking
+  lambda_reg: 1.0
+  gamma_volatility: 1.5               # 1.5 acts as a strong tie-breaker without overpowering the main Regret score
+  logit_penalty_weight: 50.0          # The "Electric Fence" - needs to be massive to instantly reject bad games
+
+  # Budget and stopping
+  maxiter: 500
+  maxfevals: 50000
+  tolfun: 0.0001
+  restarts: 2                         # Enables IPOP Restarts to teleport out of local minima!
+
 checkpoint:
   enabled: true
   checkpoint_dir: "checkpoints"
   save_interval: 1000
   keep_top_k: 5
+
 logging:
   log_level: "INFO"
   log_interval: 500
   save_stats_interval: 100
+  sample_interval: 1
   output_dir: "outputs"
-execution:
-  total_steps: 5000
-  device: "auto"
-  seed: 42

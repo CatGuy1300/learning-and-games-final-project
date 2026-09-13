@@ -38,6 +38,7 @@ class OptimisticMWU(BaseLearningDynamic):
         strict_theory_eta: bool = False,
         logit_penalty_threshold: float | None = None,
         logit_penalty_norm: int = 2,
+        logit_penalty_mode: str = "absolute",
     ) -> None:
         """Initialize OMWU dynamic."""
         if eta is not None:
@@ -55,6 +56,7 @@ class OptimisticMWU(BaseLearningDynamic):
         self.log_strategies = torch.zeros_like(self.stacked_strategies)
         self.logit_penalty_threshold = logit_penalty_threshold
         self.logit_penalty_norm = logit_penalty_norm
+        self.logit_penalty_mode = logit_penalty_mode
         self.reset()
 
     def reset(self, initial_strategies: list[torch.Tensor] | None = None) -> None:
@@ -75,6 +77,10 @@ class OptimisticMWU(BaseLearningDynamic):
         self.stacked_prev_utilities.zero_()
         self.has_prev = False
         self.cumulative_logit_penalty.zero_()
+        
+        if self.logit_penalty_threshold is not None:
+            self.target_logs = torch.zeros_like(self.log_strategies)
+            self.excess = torch.zeros_like(self.log_strategies)
 
     def step(self, utility_vectors: list[torch.Tensor]) -> list[torch.Tensor]:
         """Update strategies using 2D vectorized OMWU step rule across all N players simultaneously."""
@@ -108,8 +114,20 @@ class OptimisticMWU(BaseLearningDynamic):
         
         # 3. Logit Penalty accumulation
         if self.logit_penalty_threshold is not None:
-            excess = torch.nn.functional.relu(torch.abs(self.log_strategies) - self.logit_penalty_threshold)
-            self.cumulative_logit_penalty += (excess ** self.logit_penalty_norm).sum(dim=(-1, -2))
+            if self.logit_penalty_mode == "centered":
+                valid_counts = self.mask.sum(dim=-1, keepdim=True).to(dtype=self.log_strategies.dtype)
+                safe_logs = torch.where(self.mask, self.log_strategies, torch.zeros_like(self.log_strategies))
+                means = safe_logs.sum(dim=-1, keepdim=True) / valid_counts
+                torch.sub(self.log_strategies, means, out=self.target_logs)
+            else:
+                self.target_logs.copy_(self.log_strategies)
+                
+            torch.abs(self.target_logs, out=self.excess)
+            self.excess.sub_(self.logit_penalty_threshold)
+            torch.nn.functional.relu(self.excess, inplace=True)
+            self.excess.masked_fill_(~self.mask, 0.0)
+            self.excess.pow_(self.logit_penalty_norm)
+            self.cumulative_logit_penalty += self.excess.sum(dim=(-1, -2))
 
         # Apply mask
         self.log_strategies.masked_fill_(~self.mask, -float("inf"))
@@ -127,28 +145,29 @@ class OptimisticMWU(BaseLearningDynamic):
     def get_state(self) -> dict[str, Any]:
         """Serialize state dictionary."""
         return {
-            "strategies": [s.cpu() for s in self.strategies],
+            "strategies": [s.clone() for s in self.strategies],
             "logits": [
                 (
-                    self.log_strategies[0, i, : self.action_sizes[i]].cpu()
+                    self.log_strategies[0, i, : self.action_sizes[i]].clone()
                     if self.batch_size == 1
-                    else self.log_strategies[:, i, : self.action_sizes[i]].cpu()
+                    else self.log_strategies[:, i, : self.action_sizes[i]].clone()
                 )
                 for i in range(self.num_players)
             ],
             "prev_utilities": (
                 [
                     (
-                        self.stacked_prev_utilities[0, i, : self.action_sizes[i]].cpu()
+                        self.stacked_prev_utilities[0, i, : self.action_sizes[i]].clone()
                         if self.batch_size == 1
-                        else self.stacked_prev_utilities[:, i, : self.action_sizes[i]].cpu()
+                        else self.stacked_prev_utilities[:, i, : self.action_sizes[i]].clone()
                     )
                     for i in range(self.num_players)
                 ]
-                if self.stacked_prev_utilities is not None
+                if self.has_prev
                 else None
             ),
             "eta": self.eta,
+            "cumulative_logit_penalty": self.cumulative_logit_penalty.clone(),
         }
 
     def load_state(self, state_dict: dict[str, Any]) -> None:

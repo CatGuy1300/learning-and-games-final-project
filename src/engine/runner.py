@@ -19,6 +19,7 @@ from rich.progress import (
 from src.config.schemas import ExperimentConfig
 from src.config.validation import validate_experiment_config
 from src.dynamics.base import BaseLearningDynamic
+from src.dynamics.dmwu import DMWU
 from src.dynamics.mirror_prox import MirrorProx
 from src.dynamics.mwu import MultiplicativeWeightsUpdate
 from src.dynamics.omwu import OptimisticMWU
@@ -119,6 +120,18 @@ def instantiate_dynamic(
             T=config.execution.total_steps,
             strict_theory_eta=config.dynamic.strict_theory_eta,
         )
+    elif algo == "dmwu":
+        return DMWU(
+            action_sizes=action_sizes,
+            eta=eta,
+            device=device,
+            batch_size=batch_size,
+            T=config.execution.total_steps,
+            dmwu_gamma=config.dynamic.dmwu_gamma,
+            logit_penalty_threshold=config.dynamic.logit_penalty_threshold,
+            logit_penalty_norm=config.dynamic.logit_penalty_norm,
+            logit_penalty_mode=config.dynamic.logit_penalty_mode,
+        )
     else:
         raise ValueError(f"Unsupported learning dynamic algorithm: '{algo}'")
 
@@ -159,6 +172,7 @@ class ExperimentRunner:
 
                 if hasattr(torch, "_dynamo"):
                     torch._dynamo.config.suppress_errors = True
+                    torch._dynamo.config.cache_size_limit = 64
                 backend = (
                     "cudagraphs"
                     if (sys.platform == "win32" and self.device.type == "cuda")
@@ -168,10 +182,8 @@ class ExperimentRunner:
                     logger.info(
                         f"Enabling PyTorch JIT compilation via torch.compile(backend='{backend}')..."
                     )
-                self.dynamic.step_2d = torch.compile(self.dynamic.step_2d, backend=backend)
-                # Ensure torch.no_grad() is used or mark step begins to satisfy cudagraphs fast path
-                self.game.get_stacked_utility_vectors = torch.compile(
-                    self.game.get_stacked_utility_vectors, backend=backend
+                self.dynamic.step_unrolled_block = torch.compile(
+                    self.dynamic.step_unrolled_block, backend=backend, dynamic=False
                 )
             except Exception as e:
                 logger.warning(
@@ -183,8 +195,11 @@ class ExperimentRunner:
         strat_mode = config.dynamic.initial_strategy_type.lower()
         if strat_mode == "random":
             initial_strats = []
+            generator = torch.Generator(device=self.device)
+            if self.config.execution.seed is not None:
+                generator.manual_seed(self.config.execution.seed)
             for a_size in self.game.action_sizes:
-                r = torch.rand(a_size, device=self.device, dtype=torch.get_default_dtype())
+                r = torch.rand(a_size, generator=generator, device=self.device, dtype=torch.get_default_dtype())
                 initial_strats.append(r / r.sum())
         elif strat_mode == "custom" and config.dynamic.custom_initial_strategies:
             initial_strats = [
@@ -234,6 +249,48 @@ class ExperimentRunner:
 
         if resume_checkpoint_path:
             self._resume_from_checkpoint(resume_checkpoint_path)
+
+    def reset(self) -> None:
+        """Reset the runner and its simulation states for a new run in-place without triggering recompilation."""
+        # Reset dynamic states
+        initial_strats = None
+        strat_mode = self.config.dynamic.initial_strategy_type.lower()
+        if strat_mode == "random":
+            initial_strats = []
+            generator = torch.Generator(device=self.device)
+            if self.config.execution.seed is not None:
+                generator.manual_seed(self.config.execution.seed)
+            for a_size in self.game.action_sizes:
+                r = torch.rand(a_size, generator=generator, device=self.device, dtype=torch.get_default_dtype())
+                initial_strats.append(r / r.sum())
+        elif strat_mode == "custom" and self.config.dynamic.custom_initial_strategies:
+            initial_strats = [
+                torch.tensor(s, device=self.device, dtype=torch.get_default_dtype())
+                for s in self.config.dynamic.custom_initial_strategies
+            ]
+        self.dynamic.reset(initial_strategies=initial_strats)
+        
+        # Zero out accumulated payoffs/utilities
+        self.stacked_cumulative_utility_vectors.zero_()
+        self.cumulative_actual_payoffs.zero_()
+        
+        # We don't necessarily need to zero hist arrays since they are overwritten,
+        # but zeroing them avoids any potential leakage to stats collector if steps don't align.
+        self.hist_strats.zero_()
+        self.hist_logits.zero_()
+        self.hist_stacked_u.zero_()
+        self.hist_cum_u.zero_()
+        self.hist_cum_p.zero_()
+        
+        # Reset step counters and stats collector
+        self.start_step = 0
+        
+        # Re-initialize the stats collector cleanly
+        self.stats_collector = StatsCollector(
+            output_dir=self.config.logging.output_dir,
+            session_id=self.session_id,
+        )
+        self.stats_collector.set_payoffs(self.game.get_payoff_tensors())
 
     @property
     def cumulative_utility_vectors(self) -> list[torch.Tensor]:
@@ -293,15 +350,20 @@ class ExperimentRunner:
             np.random.set_state(rng_state["numpy"])
         if "torch" in rng_state:
             torch.set_rng_state(rng_state["torch"])
+        self.last_ckpt = self.start_step
         logger.info(f"Resumed experiment '{self.config.name}' from step {self.start_step}")
 
-    def run(self, target_steps: int | None = None) -> dict[str, Any]:
+    def run(self, target_steps: int | None = None, window_ranges: list[tuple[int, int]] | None = None, progress_context: Progress | None = None) -> dict[str, Any]:
         """Run simulation loop from current step to target_steps.
 
         Parameters
         ----------
         target_steps : int | None, optional
             Step to run up to. If None, uses config.execution.total_steps.
+        window_ranges : list[tuple[int, int]] | None, optional
+            List of (start_step, end_step) tuples. The runner will track and return the max cumulative regret inside each window.
+        progress_context : Progress | None, optional
+            Optional rich progress context for nested task rendering.
 
         Returns
         -------
@@ -316,71 +378,34 @@ class ExperimentRunner:
             )
 
         steps_per_call = max(1, self.config.execution.steps_per_call)
-        step = self.start_step
-
-        if self.config.execution.quiet:
-            # Silent loop
+        window_maxes = {i: None for i in range(len(window_ranges))} if window_ranges else {}
+        window_strat_maxes = {i: None for i in range(len(window_ranges))} if window_ranges else {}
+        window_strat_mins = {i: None for i in range(len(window_ranges))} if window_ranges else {}
+        record_history = not self.config.execution.quiet
+        def _execute_loop(progress=None, task_id=None):
+            step = self.start_step
             while step < total_steps:
                 target_step = min(step + steps_per_call, total_steps)
                 
                 # Check if we need to checkpoint inside this unrolled block
-                last_ckpt = getattr(self, "last_ckpt", 0)
                 if self.config.checkpoint.enabled:
-                    if target_step > last_ckpt and target_step % self.config.checkpoint.save_interval == 0:
-                        target_step = (last_ckpt // self.config.checkpoint.save_interval + 1) * self.config.checkpoint.save_interval
+                    next_ckpt = (step // self.config.checkpoint.save_interval + 1) * self.config.checkpoint.save_interval
+                    target_step = min(target_step, next_ckpt)
                 
                 k_steps = target_step - step
                 
+                if k_steps <= 0:
+                    break
+                
                 with torch.no_grad():
-                    self.dynamic.step_unrolled_block(
-                        game=self.game,
-                        cum_u_2d=self.stacked_cumulative_utility_vectors,
-                        cum_p_1d=self.cumulative_actual_payoffs,
-                        k_steps=k_steps,
-                    )
-                
-                step += k_steps
-                
-                is_ckpt_step = self.config.checkpoint.enabled and step % self.config.checkpoint.save_interval == 0
-                if is_ckpt_step and step > getattr(self, "last_ckpt", 0):
-                    rng_state = {
-                        "python": random.getstate(),
-                        "numpy": np.random.get_state(),
-                        "torch": torch.get_rng_state(),
-                    }
-                    self.checkpoint_manager.save(
-                        step=step,
-                        config_dict=self.config.model_dump(),
-                        dynamic_state=self.dynamic.get_state(),
-                        rng_state=rng_state,
-                        cumulative_utility_vectors=self.cumulative_utility_vectors,
-                        cumulative_actual_payoffs=self.cumulative_actual_payoffs,
-                    )
-                    self.last_ckpt = step
-        else:
-            with Progress(
-                TextColumn("[progress.description]{task.description}"),
-                BarColumn(),
-                MofNCompleteColumn(),
-                TaskProgressColumn(),
-                TimeElapsedColumn(),
-                TextColumn("<"),
-                TimeRemainingColumn(),
-                TextColumn("{task.fields[postfix]}"),
-                console=console,
-                refresh_per_second=10,
-            ) as progress:
-                task_id = progress.add_task(
-                    f"Running {self.config.dynamic.algorithm.upper()}",
-                    total=total_steps,
-                    completed=self.start_step,
-                    postfix="",
-                )
-                while step < total_steps:
-                    target_step = min(step + steps_per_call, total_steps)
-                    k_steps = target_step - step
-
-                    with torch.no_grad():
+                    if not record_history:
+                        self.dynamic.step_unrolled_block(
+                            game=self.game,
+                            cum_u_2d=self.stacked_cumulative_utility_vectors,
+                            cum_p_1d=self.cumulative_actual_payoffs,
+                            k_steps=k_steps,
+                        )
+                    else:
                         self.dynamic.step_unrolled_block(
                             game=self.game,
                             cum_u_2d=self.stacked_cumulative_utility_vectors,
@@ -392,25 +417,49 @@ class ExperimentRunner:
                             hist_cum_u=self.hist_cum_u,
                             hist_cum_p=self.hist_cum_p,
                         )
-                    step += k_steps
-
+                
+                step += k_steps
+                
+                if window_ranges is not None:
+                    current_u = self.cumulative_utility_vectors
+                    current_p = self.cumulative_actual_payoffs.T.tolist()
+                    if self.config.execution.batch_size == 1:
+                        current_p = [l[0] for l in current_p]
+                    current_regret = compute_cumulative_regret(current_u, current_p)
+                    p1_regret = current_regret[0]
+                    if isinstance(p1_regret, list):
+                        p1_regret = np.array(p1_regret)
+                    else:
+                        p1_regret = np.array([p1_regret])
+                        
+                    current_strat = self.dynamic.get_state()["strategies"]
+                    # shape is usually list of (B, A)
+                    # We can stack them to (B, num_players, max_A) if needed, but it's easier to just use a numpy array of whatever it is.
+                    # Actually, self.dynamic.strategies might just be a list of tensors.
+                    # Wait, let's just stack the strategies into a single numpy array if possible.
+                    # Or we can just grab self.dynamic.strategies (it's a list) and concatenate them along the action dimension.
+                    current_strat_np = np.concatenate([s.cpu().numpy() for s in current_strat], axis=-1)
+                    
+                    for w_idx, (w_start, w_end) in enumerate(window_ranges):
+                        if w_start <= step <= w_end:
+                            if window_maxes[w_idx] is None:
+                                window_maxes[w_idx] = p1_regret
+                                window_strat_maxes[w_idx] = current_strat_np
+                                window_strat_mins[w_idx] = current_strat_np
+                            else:
+                                window_maxes[w_idx] = np.maximum(window_maxes[w_idx], p1_regret)
+                                window_strat_maxes[w_idx] = np.maximum(window_strat_maxes[w_idx], current_strat_np)
+                                window_strat_mins[w_idx] = np.minimum(window_strat_mins[w_idx], current_strat_np)
+                
+                if progress is not None:
                     progress.update(task_id, advance=k_steps)
-
-                    # Heavy metrics, logging, stats buffering, and checkpointing at configured intervals
-                    is_log_step = step % self.config.logging.log_interval == 0
-                    is_flush_step = step % self.config.logging.save_stats_interval == 0
-                    is_ckpt_step = self.config.checkpoint.enabled and (
-                        step % self.config.checkpoint.save_interval == 0
-                    )
-
-                    # Pull history batch to CPU and slice by sample_interval
+                    
+                is_log_step = step % self.config.logging.log_interval == 0
+                is_flush_step = step % self.config.logging.save_stats_interval == 0
+                
+                if record_history:
                     s_int = self.config.logging.sample_interval
-                    
-                    # We start recording from (step - k_steps + 1)
-                    # We want to record steps that are multiples of sample_interval
-                    # So we find the indices in [0, k_steps-1] where (start_step + idx) % s_int == 0
                     start_step = step - k_steps + 1
-                    
                     first_idx = (s_int - (start_step % s_int)) % s_int
                     indices = torch.arange(first_idx, k_steps, s_int)
                     
@@ -432,40 +481,86 @@ class ExperimentRunner:
                             action_sizes=self.game.action_sizes
                         )
 
-                        if is_log_step:
-                            # To log, we can just use the last computed metrics from CPU
-                            if len(indices) > 0:
-                                last_cum = self.stats_collector.history_cum_regrets[0][-1]
-                                flat_cum = last_cum.tolist() if isinstance(last_cum, torch.Tensor) else [last_cum]
-                                
-                                # avg regret is just cum / step
-                                flat_avg = [c / step for c in flat_cum]
-                                
-                                postfix = (
-                                    f"max_cum_regret={max(flat_cum):.4f} max_avg_regret={max(flat_avg):.4f}"
-                                )
-                                if getattr(self, "last_ckpt", None) is not None:
-                                    postfix += f" | ckpt={self.last_ckpt}"
-                                progress.update(task_id, postfix=postfix)
+                    if is_log_step and progress is not None:
+                        last_cum = self.stats_collector.history_cum_regrets[0][-1]
+                        if isinstance(last_cum, (torch.Tensor, np.ndarray)):
+                            flat_cum = last_cum.flatten().tolist()
+                        elif isinstance(last_cum, list):
+                            flat_cum = last_cum
+                        else:
+                            flat_cum = [float(last_cum)]
+                            
+                        flat_avg = [c / step for c in flat_cum]
+                        postfix = f"max_cum_regret={max(flat_cum):.4f} max_avg_regret={max(flat_avg):.4f}"
+                        if getattr(self, "last_ckpt", None) is not None:
+                            postfix += f" | ckpt={self.last_ckpt}"
+                        progress.update(task_id, postfix=postfix)
+                else:
+                    if is_log_step and progress is not None:
+                        current_u = self.cumulative_utility_vectors
+                        current_p = self.cumulative_actual_payoffs.T.tolist()
+                        if self.config.execution.batch_size == 1:
+                            current_p = [l[0] for l in current_p]
+                        current_regret = compute_cumulative_regret(current_u, current_p)[0]
+                        flat_cum = current_regret if isinstance(current_regret, list) else (current_regret.flatten().tolist() if isinstance(current_regret, (torch.Tensor, np.ndarray)) else [float(current_regret)])
+                        flat_avg = [c / step for c in flat_cum]
+                        postfix = f"max_cum_regret={max(flat_cum):.4f} max_avg_regret={max(flat_avg):.4f}"
+                        if getattr(self, "last_ckpt", None) is not None:
+                            postfix += f" | ckpt={self.last_ckpt}"
+                        progress.update(task_id, postfix=postfix)
 
-                        if is_flush_step or (step == total_steps):
-                            self.stats_collector.flush_to_disk()
+                    if is_flush_step or (step == total_steps):
+                        self.stats_collector.flush_to_disk()
 
-                        if is_ckpt_step:
-                            rng_state = {
-                                "python": random.getstate(),
-                                "numpy": np.random.get_state(),
-                                "torch": torch.get_rng_state(),
-                            }
-                            self.checkpoint_manager.save(
-                                step=step,
-                                config_dict=self.config.model_dump(),
-                                dynamic_state=self.dynamic.get_state(),
-                                rng_state=rng_state,
-                                cumulative_utility_vectors=self.cumulative_utility_vectors,
-                                cumulative_actual_payoffs=self.cumulative_actual_payoffs,
-                            )
-                            self.last_ckpt = step
+                is_ckpt_step = self.config.checkpoint.enabled and step % self.config.checkpoint.save_interval == 0
+                if is_ckpt_step and step > getattr(self, "last_ckpt", 0):
+                    rng_state = {
+                        "python": random.getstate(),
+                        "numpy": np.random.get_state(),
+                        "torch": torch.get_rng_state(),
+                    }
+                    self.checkpoint_manager.save(
+                        step=step,
+                        config_dict=self.config.model_dump(),
+                        dynamic_state=self.dynamic.get_state(),
+                        rng_state=rng_state,
+                        cumulative_utility_vectors=self.cumulative_utility_vectors,
+                        cumulative_actual_payoffs=self.cumulative_actual_payoffs,
+                    )
+                    self.last_ckpt = step
+
+        if progress_context is not None:
+            task_id = progress_context.add_task(
+                f"[yellow]Simulation ({self.config.name})",
+                total=total_steps,
+                completed=self.start_step,
+                status="",
+                postfix=""
+            )
+            _execute_loop(progress=progress_context, task_id=task_id)
+            progress_context.remove_task(task_id)
+        elif self.config.execution.quiet:
+            _execute_loop()
+        else:
+            with Progress(
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                MofNCompleteColumn(),
+                TaskProgressColumn(),
+                TimeElapsedColumn(),
+                TextColumn("<"),
+                TimeRemainingColumn(),
+                TextColumn("{task.fields[postfix]}"),
+                console=console,
+                refresh_per_second=10,
+            ) as progress:
+                task_id = progress.add_task(
+                    f"Running {self.config.dynamic.algorithm.upper()}",
+                    total=total_steps,
+                    completed=self.start_step,
+                    postfix="",
+                )
+                _execute_loop(progress=progress, task_id=task_id)
 
         # Final flush & summary
         last_chunk_path = self.stats_collector.flush_to_disk()
@@ -491,6 +586,20 @@ class ExperimentRunner:
             "last_chunk_file": last_chunk_path,
         }
         
+        if window_ranges is not None:
+            summary["window_maxes"] = window_maxes
+            summary["window_volatilities"] = {}
+            for w_idx in range(len(window_ranges)):
+                if window_strat_maxes[w_idx] is not None:
+                    amp = window_strat_maxes[w_idx] - window_strat_mins[w_idx]
+                    # Cap the amplitude to prevent the optimizer from getting distracted
+                    capped_amp = np.clip(amp, a_min=None, a_max=self.config.cmaes.volatility_cap)
+                    # Sum capped amplitude across all actions for all players. Shape is (B, total_actions)
+                    # Sum along axis -1 to get shape (B,)
+                    summary["window_volatilities"][w_idx] = np.sum(capped_amp, axis=-1)
+                else:
+                    summary["window_volatilities"][w_idx] = np.zeros(self.config.execution.batch_size)
+        
         if hasattr(self.dynamic, "cumulative_logit_penalty"):
             summary["logit_penalty"] = self.dynamic.cumulative_logit_penalty.clone()
 
@@ -500,8 +609,31 @@ class ExperimentRunner:
             for item in (sublist if isinstance(sublist, list) else [sublist])
         ]
         if not self.config.execution.quiet:
+            try:
+                final_val = float(torch.cat(flat_final_avg).max().item())
+            except Exception:
+                final_val = float(max([x.max().item() if hasattr(x, 'max') else x for x in flat_final_avg]))
             logger.info(
-                f"Simulation completed cleanly! Final Max Avg Regret: {max(flat_final_avg):.6f}. "
+                f"Simulation completed cleanly! Final Max Avg Regret: {final_val:.6f}. "
                 f"Stats session ID '{self.session_id}' in '{self.config.logging.output_dir}'"
             )
+            
+        try:
+            from src.utils.tracking import ExperimentTracker
+            tracker = ExperimentTracker(out_dir=self.config.logging.output_dir)
+            
+            try:
+                final_val = float(torch.cat(flat_final_avg).max().item())
+            except Exception:
+                final_val = float(max([x.max().item() if hasattr(x, 'max') else x for x in flat_final_avg]))
+                
+            tracker.log_run(
+                config=self.config,
+                run_type="dynamic",
+                metrics={"final_max_avg_regret": final_val},
+                parent_session_id=self.config.parent_session_id
+            )
+        except Exception as e:
+            logger.warning(f"Failed to log run to tracker: {e}")
+            
         return summary

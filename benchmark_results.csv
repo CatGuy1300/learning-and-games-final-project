@@ -1,0 +1,10 @@
+A,Objective,Peak_Regret,Delta_Trend,Best_Fitness
+2,delta_reg,6.3858,2.7303,10.2597
+2,envelope_trend,10.3108,-0.1787,25.6573
+2,envelope_trend_log,9.3840,-0.4184,9.3280
+3,delta_reg,9.0004,1.0193,15.2109
+3,envelope_trend,19.9719,-2.9500,64.5656
+3,envelope_trend_log,19.9719,-2.9500,13.6328
+4,delta_reg,27.3511,14.2383,44.0676
+4,envelope_trend,33.1681,-1.3640,147.9028
+4,envelope_trend_log,33.1681,-1.3640,29.2367

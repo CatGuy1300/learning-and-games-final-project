@@ -1,0 +1,35 @@
+mode: "optuna"
+optuna_sampler: "tpe"
+num_trials: 150        # Higher trials because we are tuning 5 parameters
+base_config: "configs/default_omwu.yaml"
+sweep_name: "sweep_envelope_1"
+
+search_space:
+  cmaes.objective_type:
+    type: "categorical"
+    choices: ["envelope_trend"]
+  cmaes.sigma:
+    type: "float"
+    low: 0.15
+    high: 0.5          # Keeps the initial search radius within the [-1, 1] box
+  cmaes.lambda_reg:
+    type: "log_float"
+    low: 0.1
+    high: 5.0          # Log scale efficiently explores fractional vs dominant lambda weights
+  cmaes.T1_ratio:
+    type: "float"
+    low: 0.6
+    high: 0.85         # Captures the true asymptotic limit cycle without catching early chaos
+  cmaes.gamma_volatility:
+    type: "float"
+    low: 0.1
+    high: 2.0          # Hard cap to ensure volatility acts as a tie-breaker, not the main objective  execution.total_steps:
+
+    type: "categorical"
+    choices: [100000]
+  cmaes.restarts:
+    type: "categorical"
+    choices: [0]
+  cmaes.maxfevals:
+    type: "categorical"
+    choices: [4000]

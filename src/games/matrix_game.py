@@ -57,6 +57,24 @@ class MatrixGame(BaseGame):
             self.payoff_tensor_3d = torch.stack(
                 [self.payoff_a, self.payoff_b.transpose(-2, -1)], dim=dim_to_stack
             )
+            
+            # Pre-allocate output buffer for stacked utility vectors to avoid CUDAGraphs allocation issues
+            self._stacked_u_buffer_batched = torch.zeros(
+                max(self.batch_size, 1), 2, m, 1, 
+                device=device, dtype=torch.get_default_dtype()
+            )
+            self._stacked_u_buffer_unbatched = torch.zeros(
+                2, m, 1, 
+                device=device, dtype=torch.get_default_dtype()
+            )
+
+
+    def update_payoffs(self, payoffs: list[torch.Tensor]) -> None:
+        """In-place update of payoffs to preserve CUDAGraphs memory addresses."""
+        self.payoff_a.copy_(payoffs[0])
+        self.payoff_b.copy_(payoffs[1])
+        dim_to_stack = 1 if self.payoff_a.dim() == 3 else 0
+        torch.stack([self.payoff_a, self.payoff_b.transpose(-2, -1)], dim=dim_to_stack, out=self.payoff_tensor_3d)
 
     def get_payoff_tensors(self) -> list[torch.Tensor]:
         """Return list of payoff matrices [A, B] for Player 1 and Player 2."""
@@ -88,13 +106,16 @@ class MatrixGame(BaseGame):
         if self.is_square:
             if is_batched:
                 strats_perm = stacked_strategies.flip(dims=[1]).unsqueeze(-1)
+                B = strats_perm.shape[0]
                 if self.payoff_tensor_3d.dim() == 4:
-                    return torch.matmul(self.payoff_tensor_3d, strats_perm).squeeze(-1)
+                    torch.matmul(self.payoff_tensor_3d, strats_perm, out=self._stacked_u_buffer_batched[:B])
                 else:
-                    return torch.matmul(self.payoff_tensor_3d.unsqueeze(0), strats_perm).squeeze(-1)
+                    torch.matmul(self.payoff_tensor_3d.unsqueeze(0), strats_perm, out=self._stacked_u_buffer_batched[:B])
+                return self._stacked_u_buffer_batched[:B].squeeze(-1)
             else:
                 strats_perm = stacked_strategies.flip(dims=[0]).unsqueeze(2)
-                return torch.bmm(self.payoff_tensor_3d, strats_perm).squeeze(2)
+                torch.bmm(self.payoff_tensor_3d, strats_perm, out=self._stacked_u_buffer_unbatched)
+                return self._stacked_u_buffer_unbatched.squeeze(2)
 
         m, n = self.action_sizes
         if is_batched:

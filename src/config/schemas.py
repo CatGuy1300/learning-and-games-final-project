@@ -31,9 +31,10 @@ class DynamicConfig(BaseModel):
 
     algorithm: str = Field(
         default="omwu",
-        description="Learning dynamic type ('omwu', 'mwu', 'mirror_prox')",
+        description="Learning dynamic type ('omwu', 'mwu', 'mirror_prox', 'dmwu')",
     )
     eta: float | None = Field(default=None, gt=0.0, description="Learning rate step size eta. If None, it is inferred.")
+    dmwu_gamma: float = Field(default=0.1, ge=0.0, description="Dissipation rate for DMWU")
     strict_theory_eta: bool = Field(default=False, description="Use strict horizon-dependent theoretical step size")
     initial_strategy_type: str = Field(
         default="uniform",
@@ -44,6 +45,7 @@ class DynamicConfig(BaseModel):
     )
     logit_penalty_threshold: float | None = Field(default=None, description="Threshold above which absolute logits are penalized")
     logit_penalty_norm: int = Field(default=2, description="Norm degree for the penalty (1 for L1, 2 for L2)")
+    logit_penalty_mode: str = Field(default="absolute", description="Penalty mode: 'absolute' (penalize distance from 0) or 'centered' (penalize variation distance from mean)")
 
 
 class CheckpointConfig(BaseModel):
@@ -111,13 +113,21 @@ class CMAESConfig(BaseModel):
     seed: int = Field(default=42, description="Random seed for CMA-ES optimization")
     objective_type: str = Field(
         default="delta_reg",
-        description="Objective function type ('delta_reg', 'raw')"
+        description="Objective function type ('delta_reg', 'raw', 'envelope_trend', 'envelope_trend_log', 'chunked_envelope_trend', 'chunked_envelope_trend_log')"
     )
+    num_chunks: int = Field(default=20, ge=2, description="Number of chunks for the chunked_envelope_trend linear regression.")
     T1_ratio: float = Field(default=0.5, gt=0.0, lt=1.0, description="Ratio of total_steps to use for T1 in delta_reg objective")
     lambda_reg: float = Field(default=1.0, ge=0.0, description="Regularization weight for delta_reg objective")
+    gamma_volatility: float = Field(default=0.0, ge=0.0, description="Weight for Volatility Score regularization to penalize converging limit cycles")
+    volatility_cap: float = Field(default=0.1, gt=0.0, description="Hard cap on action probability amplitude for volatility score")
     population_size: int | None = Field(default=None, ge=2, description="Population size for CMA-ES. If None, it is inferred.")
     logit_penalty_weight: float = Field(default=0.0, description="Weight multiplier for the logit penalty in the objective")
     logit_penalty_average: bool = Field(default=True, description="Whether to divide the total penalty by T")
+    maxiter: int = Field(default=500, description="Max generations per single restart")
+    maxfevals: int = Field(default=50000, description="Total budget (function evaluations) across all restarts")
+    tolfun: float = Field(default=1e-4, description="Flat fitness tolerance for early stopping")
+    restarts: int = Field(default=0, ge=0, description="Allow up to N IPOP restarts")
+    tolfun_hist: int = Field(default=20, ge=2, description="Generations to track for flat-fitness stopping")
 
 
 class ExperimentConfig(BaseModel):
@@ -125,6 +135,7 @@ class ExperimentConfig(BaseModel):
 
     name: str = Field(default="game_experiment", description="Experiment identification name")
     session_id: str | None = Field(default=None, description="Session token / UUID run identifier")
+    parent_session_id: str | None = Field(default=None, description="ID of a parent run (e.g. CMA-ES session id) that generated this setup")
     game: GameConfig = Field(default_factory=GameConfig)
     dynamic: DynamicConfig = Field(default_factory=DynamicConfig)
     checkpoint: CheckpointConfig = Field(default_factory=CheckpointConfig)

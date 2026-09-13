@@ -20,7 +20,7 @@ def test_cmaes_optimizer_smoke():
         ),
         dynamic=DynamicConfig(algorithm="omwu", eta=0.1),
         execution=ExecutionConfig(total_steps=10, batch_size=B),
-        cmaes=CMAESConfig(sigma=0.5, seed=42)
+        cmaes=CMAESConfig(sigma=0.5, seed=42, gamma_volatility=2.0)
     )
 
     optimizer = CMAESGameOptimizer(base_config=config)
@@ -32,12 +32,13 @@ def test_cmaes_optimizer_smoke():
     # Check that batch size matches population size
     assert optimizer.base_config.execution.batch_size == optimizer.population_size
     
-    best_payoffs, best_regret = optimizer.optimize(generations=2)
+    best_payoffs, best_factors = optimizer.optimize(generations=2)
     
     assert len(best_payoffs) == 2
     assert best_payoffs[0].shape == (2, 2)
     assert best_payoffs[1].shape == (2, 2)
-    assert isinstance(best_regret, float)
+    assert isinstance(best_factors, dict)
+    assert "regret" in best_factors
 
 def test_cmaes_optimizer_delta_reg():
     B = 10
@@ -55,15 +56,49 @@ def test_cmaes_optimizer_delta_reg():
         execution=ExecutionConfig(total_steps=10, batch_size=B),
         cmaes=CMAESConfig(
             sigma=0.5, 
-            seed=42, 
+            seed=42,
             objective_type="delta_reg",
             T1_ratio=0.5,
-            lambda_reg=0.1
+            lambda_reg=0.1,
+            gamma_volatility=2.0
         )
     )
 
     optimizer = CMAESGameOptimizer(base_config=config)
     
-    best_payoffs, best_regret = optimizer.optimize(generations=2)
+    best_payoffs, best_factors = optimizer.optimize(generations=2)
     assert len(best_payoffs) == 2
-    assert isinstance(best_regret, float)
+    assert isinstance(best_factors, dict)
+    assert "delta" in best_factors
+
+def test_cmaes_optimizer_chunked_envelope_trend():
+    config = ExperimentConfig(
+        name="test_cmaes_chunked",
+        game=GameConfig(
+            generator="custom",
+            utility_range=(-1.0, 1.0),
+            payoffs=[
+                [[0.0, 0.0], [0.0, 0.0]],
+                [[0.0, 0.0], [0.0, 0.0]],
+            ]
+        ),
+        dynamic=DynamicConfig(algorithm="omwu", eta=0.1),
+        execution=ExecutionConfig(total_steps=100, batch_size=4),
+        cmaes=CMAESConfig(
+            sigma=0.5, 
+            seed=42,
+            objective_type="chunked_envelope_trend",
+            num_chunks=5,
+            T1_ratio=0.5,
+            lambda_reg=0.1,
+            gamma_volatility=2.0
+        )
+    )
+
+    optimizer = CMAESGameOptimizer(base_config=config)
+    
+    best_payoffs, best_factors = optimizer.optimize(generations=2)
+    assert len(best_payoffs) == 2
+    assert isinstance(best_factors, dict)
+    assert "delta" in best_factors
+    assert "peak_weight" in best_factors

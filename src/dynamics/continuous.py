@@ -100,6 +100,65 @@ class ContinuousGameDynamics(nn.Module):
         state_dot = torch.cat(state_components)
         return state_dot
 
+    def get_initial_state(self, device: torch.device | None = None, dtype: torch.dtype | None = None) -> torch.Tensor:
+        """
+        Creates the zeroed initial state vector required for the ODE simulation.
+        """
+        device = device or self.game.device
+        dtype = dtype or getattr(self.game, 'dtype', self.payoffs[0].dtype)
+        
+        state_size = 2 * sum(self.action_sizes) + self.num_players
+        if self.logit_penalty_threshold is not None:
+            state_size += 1
+            
+        return torch.zeros(state_size, device=device, dtype=dtype)
+
+    def unpack_states(self, states: torch.Tensor, eta: float | None = None) -> dict:
+        """
+        Unpacks a batched state trajectory [T, state_size] or single state [state_size] into structured outputs.
+        """
+        # Ensure 2D for consistent indexing
+        if states.dim() == 1:
+            states = states.unsqueeze(0)
+            
+        unpacked = {
+            "logits": [],
+            "strategies": [],
+            "Z": [],
+            "P": [],
+            "regrets": [],
+            "penalty": None
+        }
+        
+        idx = 0
+        
+        # 1. Unpack logits and compute strategies
+        for A in self.action_sizes:
+            w = states[:, idx : idx + A]
+            unpacked["logits"].append(w)
+            unpacked["strategies"].append(torch.softmax(w, dim=-1))
+            idx += A
+            
+        # 2. Unpack continuous regret Z and continuous average probability P
+        for A in self.action_sizes:
+            Z = states[:, idx : idx + A]
+            idx += A
+            P = states[:, idx : idx + 1]
+            idx += 1
+            
+            unpacked["Z"].append(Z)
+            unpacked["P"].append(P)
+            
+            if eta is not None:
+                # Regret = (Z - P) / eta
+                regret = (Z - P) / eta
+                unpacked["regrets"].append(regret)
+                
+        # 3. Unpack Barrier penalty if it exists
+        if states.shape[1] > idx:
+            unpacked["penalty"] = states[:, idx : idx + 1]
+            
+        return unpacked
 
 class OMWUContinuous(ContinuousGameDynamics):
     """

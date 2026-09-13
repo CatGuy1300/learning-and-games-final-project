@@ -1,0 +1,8 @@
+base_config: "configs/default_omwu.yaml"
+sweep_name: "sweep_1"
+
+grid:
+  cmaes.sigma: [0.1, 0.5]
+  cmaes.lambda_reg: [0.5, 1.0]
+  cmaes.maxiter: [5]
+  cmaes.maxfevals: [200]

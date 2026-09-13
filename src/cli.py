@@ -147,5 +147,43 @@ def show_game(
         console.print(p_tensor.cpu().numpy())
 
 
+@app.command()
+def optimize(
+    config: str = typer.Option(..., "--config", "-c", help="Path to YAML configuration file"),
+    generations: int | None = typer.Option(None, "--generations", "-g", help="Override max generations"),
+) -> None:
+    """Run a single CMA-ES optimization."""
+    exp_config = load_yaml_config(config)
+    if generations is not None:
+        exp_config.cmaes.maxiter = generations
+    
+    from src.engine.optimizer import CMAESGameOptimizer
+    
+    console.print(f"[bold green]Initializing CMA-ES Optimization:[/bold green] {exp_config.name}")
+    optimizer = CMAESGameOptimizer(exp_config)
+    _, best_factors = optimizer.optimize()
+    
+    table = Table(title="CMA-ES Best Solution")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", style="magenta")
+    table.add_row("Session ID", exp_config.session_id)
+    table.add_row("Best Fitness", f"{best_factors['fitness']:.6f}")
+    table.add_row("Best Regret", f"{best_factors['regret']:.6f}")
+    table.add_row("Best Volatility", f"{best_factors.get('volatility', 0.0):.6f}")
+    
+    console.print(table)
+
+
+@app.command()
+def sweep(
+    config: str = typer.Option(..., "--config", "-c", help="Path to sweep YAML config"),
+    workers: int = typer.Option(2, "--workers", "-w", help="Number of parallel processes to spawn"),
+    resume: bool = typer.Option(True, "--resume", "-r", help="Resume from sweep_state.json if it exists")
+) -> None:
+    """Run a parallel hyperparameter sweep with checkpointing."""
+    from src.engine.sweeper import run_sweep
+    run_sweep(config, workers, resume)
+
+
 if __name__ == "__main__":
     app()

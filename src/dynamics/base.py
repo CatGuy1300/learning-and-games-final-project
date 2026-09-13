@@ -143,9 +143,6 @@ class BaseLearningDynamic(ABC):
             Number of unrolled steps.
         """
         for i in range(k_steps):
-            if hasattr(torch, "compiler") and hasattr(torch.compiler, "cudagraph_mark_step_begin"):
-                torch.compiler.cudagraph_mark_step_begin()
-
             stacked_u = game.get_stacked_utility_vectors(self.stacked_strategies)
             cum_u_2d += stacked_u
             cum_p_1d += (stacked_u * self.stacked_strategies).sum(dim=-1)

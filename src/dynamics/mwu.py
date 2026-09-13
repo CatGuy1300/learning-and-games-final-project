@@ -23,6 +23,7 @@ class MultiplicativeWeightsUpdate(BaseLearningDynamic):
         T: int = 10000,
         logit_penalty_threshold: float | None = None,
         logit_penalty_norm: int = 2,
+        logit_penalty_mode: str = "absolute",
     ) -> None:
         """Initialize MWU dynamic."""
         if eta is not None:
@@ -35,6 +36,7 @@ class MultiplicativeWeightsUpdate(BaseLearningDynamic):
         self.log_strategies = torch.zeros_like(self.stacked_strategies)
         self.logit_penalty_threshold = logit_penalty_threshold
         self.logit_penalty_norm = logit_penalty_norm
+        self.logit_penalty_mode = logit_penalty_mode
         self.reset()
 
     def reset(self, initial_strategies: list[torch.Tensor] | None = None) -> None:
@@ -52,6 +54,11 @@ class MultiplicativeWeightsUpdate(BaseLearningDynamic):
         eps = 1e-30
         self.log_strategies.copy_(torch.log(torch.clamp(self.stacked_strategies, min=eps)))
         self.log_strategies.masked_fill_(~self.mask, -float("inf"))
+        self.cumulative_logit_penalty.zero_()
+        
+        if self.logit_penalty_threshold is not None:
+            self.target_logs = torch.zeros_like(self.log_strategies)
+            self.excess = torch.zeros_like(self.log_strategies)
 
     def step(self, utility_vectors: list[torch.Tensor]) -> list[torch.Tensor]:
         """Update strategies using 2D vectorized MWU step across all N players simultaneously."""
@@ -76,8 +83,20 @@ class MultiplicativeWeightsUpdate(BaseLearningDynamic):
         
         # 3. Logit Penalty accumulation
         if self.logit_penalty_threshold is not None:
-            excess = torch.nn.functional.relu(torch.abs(self.log_strategies) - self.logit_penalty_threshold)
-            self.cumulative_logit_penalty += (excess ** self.logit_penalty_norm).sum(dim=(-1, -2))
+            if self.logit_penalty_mode == "centered":
+                valid_counts = self.mask.sum(dim=-1, keepdim=True).to(dtype=self.log_strategies.dtype)
+                safe_logs = torch.where(self.mask, self.log_strategies, torch.zeros_like(self.log_strategies))
+                means = safe_logs.sum(dim=-1, keepdim=True) / valid_counts
+                torch.sub(self.log_strategies, means, out=self.target_logs)
+            else:
+                self.target_logs.copy_(self.log_strategies)
+                
+            torch.abs(self.target_logs, out=self.excess)
+            self.excess.sub_(self.logit_penalty_threshold)
+            torch.nn.functional.relu(self.excess, inplace=True)
+            self.excess.masked_fill_(~self.mask, 0.0)
+            self.excess.pow_(self.logit_penalty_norm)
+            self.cumulative_logit_penalty += self.excess.sum(dim=(-1, -2))
 
         # Apply mask
         self.log_strategies.masked_fill_(~self.mask, -float("inf"))

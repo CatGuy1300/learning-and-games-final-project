@@ -2,11 +2,12 @@
 
 import torch
 
+import string
 from src.config.validation import validate_payoff_tensors, validate_strategies
 from src.games.base import BaseGame
 
-# Subscript letters for einsum contracts (up to 26 action dimensions)
-_LETTERS = "abcdefghijklmnopqrstuvwxyz"
+# Subscript letters for einsum contracts (up to 52 action dimensions)
+_LETTERS = string.ascii_letters
 
 
 class NPlayerGame(BaseGame):
@@ -17,6 +18,7 @@ class NPlayerGame(BaseGame):
         payoffs: list[torch.Tensor],
         utility_range: tuple[float, float] = (-1.0, 1.0),
         device: torch.device = torch.device("cpu"),
+        dtype: torch.dtype | None = None,
     ) -> None:
         """Initialize NPlayerGame with payoff tensors.
 
@@ -46,7 +48,9 @@ class NPlayerGame(BaseGame):
             device=device,
         )
 
-        self.payoffs = [p.to(device=device, dtype=torch.get_default_dtype()) for p in payoffs]
+        if dtype is None:
+            dtype = torch.get_default_dtype()
+        self.payoffs = [p.to(device=device, dtype=dtype) for p in payoffs]
 
         # Pre-cache einsum string equations for fast 2D utility contractions
         indices = _LETTERS[: self.num_players]
@@ -55,6 +59,12 @@ class NPlayerGame(BaseGame):
             target_letter = indices[i]
             operand_indices = [f",{indices[j]}" for j in range(self.num_players) if j != i]
             self._einsum_strs.append(f"{indices}{''.join(operand_indices)}->{target_letter}")
+
+
+    def update_payoffs(self, payoffs: list[torch.Tensor]) -> None:
+        """In-place update of payoffs to preserve CUDAGraphs memory addresses."""
+        for p_dst, p_src in zip(self.payoffs, payoffs):
+            p_dst.copy_(p_src)
 
     def get_payoff_tensors(self) -> list[torch.Tensor]:
         """Return list of payoff tensors [U^(1), ..., U^(N)]."""
@@ -82,14 +92,13 @@ class NPlayerGame(BaseGame):
         for i in range(self.num_players):
             target_letter = indices[i]
             if is_batched:
-                payoff_prefix = "z" if self.payoffs[i].dim() == self.num_players + 1 else ""
-                operand_indices = [f",z{indices[j]}" for j in range(self.num_players) if j != i]
-                einsum_str = f"{payoff_prefix}{indices}{''.join(operand_indices)}->z{target_letter}"
+                payoff_prefix = "..." if self.payoffs[i].dim() == self.num_players + 1 else ""
+                einsum_str = f"{payoff_prefix}{indices},{','.join(['...' + indices[j] for j in range(self.num_players) if j != i])}->...{target_letter}"
             else:
                 einsum_str = self._einsum_strs[i]
 
             other_strats = [
-                strategies[j].to(device=self.device, dtype=torch.get_default_dtype())
+                strategies[j].to(device=self.device, dtype=self.payoffs[0].dtype)
                 for j in range(self.num_players)
                 if j != i
             ]
@@ -117,9 +126,8 @@ class NPlayerGame(BaseGame):
         for i in range(self.num_players):
             target_letter = indices[i]
             if is_batched:
-                payoff_prefix = "z" if self.payoffs[i].dim() == self.num_players + 1 else ""
-                operand_indices = [f",z{indices[j]}" for j in range(self.num_players) if j != i]
-                einsum_str = f"{payoff_prefix}{indices}{''.join(operand_indices)}->z{target_letter}"
+                payoff_prefix = "..." if self.payoffs[i].dim() == self.num_players + 1 else ""
+                einsum_str = f"{payoff_prefix}{indices},{','.join(['...' + indices[j] for j in range(self.num_players) if j != i])}->...{target_letter}"
                 other_strats = [
                     stacked_strategies[:, j, : self.action_sizes[j]]
                     for j in range(self.num_players)
@@ -243,12 +251,14 @@ class BatchNPlayerGame:
         """
         indices = _LETTERS[: self.num_players]
         utility_vectors: list[torch.Tensor] = []
+        batch_prefix = "..."
+        payoff_str = "..." + indices
 
         for i in range(self.num_players):
             target_letter = indices[i]
-            # Construct batch einsum equation: e.g. for B=100, N=3, i=0: 'zabc,zb,zc->za'
-            operand_indices = [f",z{indices[j]}" for j in range(self.num_players) if j != i]
-            einsum_str = f"z{indices}{''.join(operand_indices)}->z{target_letter}"
+            # Construct batch einsum equation: e.g. for B=100, N=3, i=0: '...abc,...b,...c->...a'
+            operand_indices = [f",...{indices[j]}" for j in range(self.num_players) if j != i]
+            einsum_str = f"{payoff_str},{','.join([batch_prefix + l for l in indices if l != target_letter])}->{batch_prefix}{target_letter}"
 
             other_strats = [
                 batch_strategies[j].to(device=self.device, dtype=torch.get_default_dtype())

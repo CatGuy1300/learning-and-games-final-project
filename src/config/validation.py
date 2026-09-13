@@ -121,12 +121,14 @@ def clamp_utility_matrices(
 
 
 def validate_cmaes_config(config: CMAESConfig) -> None:
-    if config.objective_type not in ["delta_reg", "raw"]:
-        raise ValueError(f"objective_type must be 'delta_reg' or 'raw', got {config.objective_type}")
+    if config.objective_type not in ["delta_reg", "raw", "envelope_trend", "envelope_trend_log", "chunked_envelope_trend", "chunked_envelope_trend_log"]:
+        raise ValueError(f"objective_type must be 'delta_reg', 'raw', 'envelope_trend', 'envelope_trend_log', 'chunked_envelope_trend', or 'chunked_envelope_trend_log', got {config.objective_type}")
     if config.T1_ratio <= 0.0 or config.T1_ratio >= 1.0:
         raise ValueError(f"T1_ratio must be in (0, 1), got {config.T1_ratio}")
     if config.sigma <= 0.0:
         raise ValueError(f"sigma must be > 0, got {config.sigma}")
+    if config.gamma_volatility < 0.0:
+        raise ValueError(f"gamma_volatility must be >= 0, got {config.gamma_volatility}")
 
 
 def validate_experiment_config(config: ExperimentConfig) -> None:

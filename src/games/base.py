@@ -18,6 +18,7 @@ class BaseGame(ABC):
         """Initialize base game properties."""
         self.num_players = num_players
         self.action_sizes = action_sizes
+        self.max_action_size = max(action_sizes)
         self.utility_range = utility_range
         self.device = device
 

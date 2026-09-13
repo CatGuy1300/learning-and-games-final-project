@@ -1,0 +1,35 @@
+mode: "optuna"
+optuna_sampler: "tpe"
+num_trials: 150
+base_config: "configs/default_omwu.yaml"
+sweep_name: "sweep_delta_1"
+
+search_space:
+  cmaes.objective_type:
+    type: "categorical"
+    choices: ["delta_reg"]
+  cmaes.sigma:
+    type: "float"
+    low: 0.15
+    high: 0.5
+  cmaes.lambda_reg:
+    type: "log_float"
+    low: 0.1
+    high: 5.0
+  cmaes.T1_ratio:
+    type: "float"
+    low: 0.6
+    high: 0.85
+  cmaes.gamma_volatility:     # Added!
+    type: "float"
+    low: 0.1
+    high: 2.0
+  execution.total_steps:
+    type: "categorical"
+    choices: [100000]
+  cmaes.restarts:
+    type: "categorical"
+    choices: [0]
+  cmaes.maxfevals:
+    type: "categorical"
+    choices: [4000]
